@@ -26,15 +26,6 @@ BuildRequires:  gcc-toolset-13-annobin-plugin-gcc
 BuildRequires:  gcc-toolset-13-binutils
 %endif
 
-%if 0%{?amzn2023}
-%global _hardened_build 0
-%global _enable_annobin 0
-%global __cc /usr/bin/gcc14-gcc
-%global __cxx /usr/bin/gcc14-g++
-BuildRequires: gcc14
-BuildRequires: gcc14-c++
-%endif
-
 # gpu support
 %if 0%{?fedora}
 %ifnarch i686 s390x
