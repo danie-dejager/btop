@@ -122,7 +122,7 @@ namespace Input {
 		string key = input;
 		if (not key.empty()) {
 			//? Remove escape code prefix if present
-			if (key.substr(0, 2) == Fx::e) {
+			if (key.length() > 1 and key.at(0) == Fx::e.at(0)) {
 				key.erase(0, 1);
 			}
 			//? Detect if input is an mouse event
@@ -421,6 +421,12 @@ namespace Input {
 					Menu::show(Menu::Menus::SignalChoose);
 					return;
 				}
+			    else if (key == "N" and (Config::getB("show_detailed") or Config::getI("selected_pid") > 0)) {
+					atomic_wait(Runner::active);
+				    if (Config::getB("show_detailed") and Config::getI("proc_selected") == 0 and Proc::detailed.status == "Dead") return;
+				    Menu::show(Menu::Menus::Renice);
+				    return;
+			    }
 				else if (is_in(key, "up", "down", "page_up", "page_down", "home", "end") or (vim_keys and is_in(key, "j", "k", "g", "G"))) {
 					proc_mouse_scroll:
 					redraw = false;
