@@ -2,7 +2,7 @@
 
 Name:           btop
 Version:        1.4.5
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        Modern and colorful command line resource monitor that shows usage and stats
 
 # The entire source code is ASL 2.0 except:
