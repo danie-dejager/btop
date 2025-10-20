@@ -296,8 +296,7 @@ namespace Shared {
 
 		for (int i = 0; i < Shared::coreCount; ++i) {
 			Cpu::core_freq.push_back("/sys/devices/system/cpu/cpufreq/policy" + to_string(i) + "/scaling_cur_freq");
-			if (not fs::exists(Cpu::core_freq[i]) or access(Cpu::core_freq[i].c_str(), R_OK) == -1) {
-				Cpu::core_freq[i].clear();
+			if (not fs::exists(Cpu::core_freq.back()) or access(Cpu::core_freq.back().c_str(), R_OK) == -1) {
 				Cpu::core_freq.pop_back();
 			}
 		}
@@ -316,9 +315,19 @@ namespace Shared {
 
 		//? Init for namespace Gpu
 	#ifdef GPU_SUPPORT
-		Gpu::Nvml::init();
-		Gpu::Rsmi::init();
-		Gpu::Intel::init();
+		auto shown_gpus = Config::getS("shown_gpus");
+		if (s_contains(shown_gpus, "nvidia")) {
+		    Gpu::Nvml::init();
+		}
+
+		if (s_contains(shown_gpus, "amd")) {
+			Gpu::Rsmi::init();
+		}
+
+		if (s_contains(shown_gpus, "intel")) {
+			Gpu::Intel::init();
+		}
+
 		if (not Gpu::gpu_names.empty()) {
 			for (auto const& [key, _] : Gpu::gpus[0].gpu_percent)
 				Cpu::available_fields.push_back(key);
@@ -594,18 +603,21 @@ namespace Cpu {
 			double hz = 0.0;
 			// Read frequencies from all CPU cores
 			vector<double> frequencies;
-			unsigned long cpu_count = freq_mode == "first" ? std::min(static_cast<size_t>(1),Cpu::core_freq.size()) : Cpu::core_freq.size();
-			for (unsigned int i = 0; i < cpu_count; ++i) {
-				if (not Cpu::core_freq[i].empty()) {
-					double core_hz = stod(readfile(Cpu::core_freq[i], "0.0")) / 1000;
-					if (core_hz <= 0.0 and ++failed >= 2) {
-						Cpu::core_freq[i].clear();
-						Cpu::core_freq.erase(Cpu::core_freq.begin() + i--);
-					} else {
-						frequencies.push_back(core_hz);
-					}
-				}
-			}
+			for (auto it = Cpu::core_freq.begin(); it != Cpu::core_freq.end(); ) {
+    			if (it->empty()) {
+        			it = Cpu::core_freq.erase(it);
+        			continue;
+    			}
+
+    			double core_hz = stod(readfile(*it, "0.0")) / 1000;
+    			if (core_hz <= 0.0 and ++failed >= 2) {
+        			it = Cpu::core_freq.erase(it);
+    			} else {
+        			frequencies.push_back(core_hz);
+        			if (freq_mode == "first") break;
+        			++it;
+    			}
+ 			}
 
 			if (not frequencies.empty()) {
 				if (freq_mode == "first") {
@@ -892,13 +904,13 @@ namespace Cpu {
 				catch (const std::invalid_argument&) { }
 				catch (const std::out_of_range&) { }
 			}
-		} 
+		}
 		//? Or get seconds to full
 		else if(is_in(status, "charging")) {
 			if (b.use_energy_or_charge ) {
 				if (not b.power_now.empty()) {
 					try {
-						seconds = (round(stod(readfile(b.energy_full , "0")) - round(stod(readfile(b.energy_now, "0"))))  
+						seconds = (round(stod(readfile(b.energy_full , "0")) - round(stod(readfile(b.energy_now, "0"))))
 									/ abs(stod(readfile(b.power_now, "1"))) * 3600);
 					}
 					catch (const std::invalid_argument&) { }
@@ -906,14 +918,14 @@ namespace Cpu {
 				}
 				else if (not b.current_now.empty()) {
 					try {
-						seconds = (round(stod(readfile(b.charge_full , "0")) - stod(readfile(b.charge_now, "0")))  
+						seconds = (round(stod(readfile(b.charge_full , "0")) - stod(readfile(b.charge_now, "0")))
 									/ std::abs(stod(readfile(b.current_now, "1"))) * 3600);
 					}
 					catch (const std::invalid_argument&) { }
 					catch (const std::out_of_range&) { }
 				}
 			}
-		} 
+		}
 
 		//? Get power draw
 		if (b.use_power) {
@@ -2723,7 +2735,7 @@ namespace Proc {
 	fs::file_time_type passwd_time;
 
 	uint64_t cputimes;
-	int collapse = -1, expand = -1;
+	int collapse = -1, expand = -1, toggle_children = -1;
 	uint64_t old_cputimes{};
 	atomic<int> numpids{};
 	int filter_found{};
@@ -3135,6 +3147,23 @@ namespace Proc {
 		//* Generate tree view if enabled
 		if (tree and (not no_update or should_filter or sorted_change)) {
 			bool locate_selection = false;
+
+			if (toggle_children != -1) {
+				auto collapser = rng::find(current_procs, toggle_children, &proc_info::pid);
+				if (collapser != current_procs.end()){
+					for (auto& p : current_procs) {
+						if (p.ppid == collapser->pid) {
+							auto child = rng::find(current_procs, p.pid, &proc_info::pid);
+							if (child != current_procs.end()){
+								child->collapsed = not child->collapsed;
+							}
+						}
+					}
+					if (Config::ints.at("proc_selected") > 0) locate_selection = true;
+				}
+				toggle_children = -1;
+			}
+			
 			if (auto find_pid = (collapse != -1 ? collapse : expand); find_pid != -1) {
 				auto collapser = rng::find(current_procs, find_pid, &proc_info::pid);
 				if (collapser != current_procs.end()) {
