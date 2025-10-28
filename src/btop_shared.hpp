@@ -20,8 +20,10 @@ tab-size = 4
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -204,6 +206,7 @@ namespace Cpu {
 	extern vector<string> available_fields;
 	extern vector<string> available_sensors;
 	extern tuple<int, float, long, string> current_bat;
+	extern std::optional<std::string> container_engine;
 
 	struct cpu_info {
 		std::unordered_map<string, deque<long long>> cpu_percent = {
@@ -224,6 +227,7 @@ namespace Cpu {
 		long long temp_max = 0;
 		array<double, 3> load_avg;
 		float usage_watts = 0;
+		std::optional<std::vector<std::int32_t>> active_cpus;
 	};
 
 	//* Collect cpu stats and temperatures
@@ -396,6 +400,7 @@ namespace Proc {
 		uint64_t ppid{};
 		uint64_t cpu_s{};
 		uint64_t cpu_t{};
+		uint64_t death_time{};
 		string prefix{};        // defaults to ""
 		size_t depth{};
 		size_t tree_index{};
@@ -438,8 +443,8 @@ namespace Proc {
 	void proc_sorter(vector<proc_info>& proc_vec, const string& sorting, bool reverse, bool tree = false);
 
 	//* Recursive sort of process tree
-	void tree_sort(vector<tree_proc>& proc_vec, const string& sorting,
-				   bool reverse, int& c_index, const int index_max, bool collapsed = false);
+	void tree_sort(vector<tree_proc>& proc_vec, const string& sorting, bool reverse, bool paused,
+					int& c_index, const int index_max, bool collapsed = false);
 
 	auto matches_filter(const proc_info& proc, const std::string& filter) -> bool;
 
@@ -451,3 +456,6 @@ namespace Proc {
 	//* Build prefixes for tree view
 	void _collect_prefixes(tree_proc& t, bool is_last, const string &header = "");
 }
+
+/// Detect container engine.
+auto detect_container() -> std::optional<std::string>;

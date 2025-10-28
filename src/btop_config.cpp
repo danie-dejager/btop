@@ -71,6 +71,8 @@ namespace Config {
 
 		{"rounded_corners",		"#* Rounded corners on boxes, is ignored if TTY mode is ON."},
 
+		{"terminal_sync", 		"#* Use terminal synchronized output sequences to reduce flickering on supported terminals."},
+
 		{"graph_symbol", 		"#* Default symbols to use for graph creation, \"braille\", \"block\" or \"tty\".\n"
 								"#* \"braille\" offers the highest resolution but might not be included in all fonts.\n"
 								"#* \"block\" has half the resolution of braille but uses more common characters.\n"
@@ -115,6 +117,8 @@ namespace Config {
 		{"proc_filter_kernel",  "#* (Linux) Filter processes tied to the Linux kernel(similar behavior to htop)."},
 
 		{"proc_aggregate",		"#* In tree-view, always accumulate child process resources in the parent process."},
+
+		{"keep_dead_proc_usage", "#* Should cpu and memory usage display be preserved for dead processes when paused."},
 
 		{"cpu_graph_upper", 	"#* Sets the CPU stat shown in upper half of the CPU graph, \"total\" is always available.\n"
 								"#* Select from a list of detected attributes from the options menu."},
@@ -320,11 +324,14 @@ namespace Config {
 		{"show_detailed", false},
 		{"proc_filtering", false},
 		{"proc_aggregate", false},
+		{"pause_proc_list", false},
+		{"keep_dead_proc_usage", false},
 	#ifdef GPU_SUPPORT
 		{"nvml_measure_pcie_speeds", true},
 		{"rsmi_measure_pcie_speeds", true},
-		{"gpu_mirror_graph", true}
+		{"gpu_mirror_graph", true},
 	#endif
+		{"terminal_sync", true}
 	};
 	std::unordered_map<std::string_view, bool> boolsTmp;
 
@@ -716,7 +723,7 @@ namespace Config {
 			valid_names.reserve(descriptions.size());
 			for (const auto &n : descriptions)
 				valid_names.push_back(n[0]);
-			if (string v_string; cread.peek() != '#' or (getline(cread, v_string, '\n') and not s_contains(v_string, Global::Version)))
+			if (string v_string; cread.peek() != '#' or (getline(cread, v_string, '\n') and not v_string.contains(Global::Version)))
 				write_new = true;
 			while (not cread.eof()) {
 				cread >> std::ws;
@@ -792,37 +799,33 @@ namespace Config {
 		}
 	}
 
-	static auto get_xdg_state_dir() -> std::optional<std::filesystem::path> {
-		std::optional<std::filesystem::path> xdg_state_home;
+	static constexpr auto get_xdg_state_dir() -> std::optional<fs::path> {
+		std::optional<fs::path> xdg_state_home;
 
 		{
-			const auto xdg_state_home_ptr = std::getenv("XDG_STATE_HOME");
+			const auto* xdg_state_home_ptr = std::getenv("XDG_STATE_HOME");
 			if (xdg_state_home_ptr != nullptr) {
 				xdg_state_home = std::make_optional(fs::path(xdg_state_home_ptr));
 			} else {
-				const auto home_ptr = std::getenv("HOME");
+				const auto* home_ptr = std::getenv("HOME");
 				if (home_ptr != nullptr) {
-					xdg_state_home = std::make_optional(std::filesystem::path(home_ptr) / ".local" / "state");
+					xdg_state_home = std::make_optional(fs::path(home_ptr) / ".local" / "state");
 				}
 			}
 		}
 
 		if (xdg_state_home.has_value()) {
 			std::error_code err;
-			std::filesystem::create_directories(xdg_state_home.value(), err);
+			fs::create_directories(xdg_state_home.value(), err);
 			if (err) {
 				return std::nullopt;
 			}
-			return std::make_optional(xdg_state_home.value());
+			return xdg_state_home;
 		}
 		return std::nullopt;
 	}
 
-	auto get_log_file() -> std::optional<std::filesystem::path> {
-		auto xdg_state_home = get_xdg_state_dir();
-		if (xdg_state_home.has_value()) {
-			return std::make_optional(std::filesystem::path(xdg_state_home.value()) / "btop.log");
-		}
-		return std::nullopt;
+	auto get_log_file() -> std::optional<fs::path> {
+		return get_xdg_state_dir().transform([](auto&& state_home) -> auto { return state_home / "btop.log"; });
 	}
 }

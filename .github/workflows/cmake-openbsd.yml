@@ -1,29 +1,29 @@
-name: FreeBSD CMake
+name: OpenBSD CMake
 
 on:
   push:
     branches: main
     tags-ignore: '*.*'
     paths:
-      - '.github/workflows/cmake-freebsd.yml'
+      - '.github/workflows/cmake-openbsd.yml'
       - 'CMakeLists.txt'
       - 'cmake/**'
       - 'include/**'
       - 'src/*pp'
-      - 'src/freebsd/*pp'
+      - 'src/openbsd/*pp'
   pull_request:
     branches: main
     paths:
-      - '.github/workflows/cmake-freebsd.yml'
+      - '.github/workflows/cmake-openbsd.yml'
       - 'CMakeLists.txt'
       - 'cmake/**'
       - 'include/**'
       - 'src/*pp'
-      - 'src/freebsd/*pp'
+      - 'src/openbsd/*pp'
 
 jobs:
   build:
-    name: freebsd-${{ matrix.version}}-${{ matrix.arch}}
+    name: openbsd-${{ matrix.version}}-${{ matrix.arch}}
     runs-on: ubuntu-24.04
     concurrency:
       group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.arch }}-${{ matrix.version }}
@@ -31,17 +31,17 @@ jobs:
     strategy:
       matrix:
         arch: ['aarch64', 'x86_64']
-        version: ['14.3', '15.0']
+        version: ['7.8']
     steps:
       - uses: actions/checkout@v5
 
       - name: Compile
-        uses: vmactions/freebsd-vm@v1
+        uses: vmactions/openbsd-vm@v1
         with:
           arch: ${{ matrix.arch }}
           release: ${{ matrix.version }}
           usesh: true
-          prepare: pkg install -y cmake ninja
+          prepare: pkg_add cmake ninja
           run: |
             cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
             cmake --build build --verbose

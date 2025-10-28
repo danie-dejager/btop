@@ -54,6 +54,7 @@ tab-size = 4
 #include <ranges>
 #include <regex>
 #include <string>
+#include <unordered_set>
 
 #include "../btop_config.hpp"
 #include "../btop_shared.hpp"
@@ -231,8 +232,9 @@ namespace Cpu {
 #endif
 				// try SMC (intel)
 				Logger::debug("checking intel");
-				SMCConnection smcCon;
 				try {
+					SMCConnection smcCon;
+					Logger::debug("SMC connection established");
 					long long t = smcCon.getTemp(-1);  // check if we have package T
 					if (t > -1) {
 						Logger::debug("intel sensors found");
@@ -250,7 +252,8 @@ namespace Cpu {
 						got_sensors = false;
 					}
 				} catch (std::runtime_error &e) {
-					// ignore, we don't have temp
+					Logger::debug("SMC not available: " + string(e.what()));
+					// ignore, we don't have temp (common in VMs)
 					got_sensors = false;
 				}
 #if __MAC_OS_X_VERSION_MIN_REQUIRED > 101504
@@ -1034,6 +1037,7 @@ namespace Proc {
 	string current_sort;
 	string current_filter;
 	bool current_rev = false;
+	bool is_tree_mode;
 
 	fs::file_time_type passwd_time;
 
@@ -1044,6 +1048,7 @@ namespace Proc {
 	int filter_found = 0;
 
 	detail_container detailed;
+	static std::unordered_set<size_t> dead_procs;
 
 	string get_status(char s) {
 		if (s & SRUN) return "Running";
@@ -1074,7 +1079,9 @@ namespace Proc {
 		//? Process runtime : current time - start time (both in unix time - seconds since epoch)
 		struct timeval currentTime;
 		gettimeofday(&currentTime, nullptr);
-		detailed.elapsed = sec_to_dhms(currentTime.tv_sec - (detailed.entry.cpu_s / 1'000'000));
+		//? Get elapsed time if process isn't dead
+		if (detailed.entry.state != 'X') detailed.elapsed = sec_to_dhms(currentTime.tv_sec - (detailed.entry.cpu_s / 1'000'000));
+		else detailed.elapsed = sec_to_dhms(detailed.entry.death_time);
 		if (detailed.elapsed.size() > 8) detailed.elapsed.resize(detailed.elapsed.size() - 3);
 
 		//? Get parent process name
@@ -1112,14 +1119,17 @@ namespace Proc {
 		auto per_core = Config::getB("proc_per_core");
 		auto tree = Config::getB("proc_tree");
 		auto show_detailed = Config::getB("show_detailed");
+		const auto pause_proc_list = Config::getB("pause_proc_list");
 		const size_t detailed_pid = Config::getI("detailed_pid");
 		bool should_filter = current_filter != filter;
 		if (should_filter) current_filter = filter;
 		bool sorted_change = (sorting != current_sort or reverse != current_rev or should_filter);
+		bool tree_mode_change = tree != is_tree_mode;
 		if (sorted_change) {
 			current_sort = sorting;
 			current_rev = reverse;
 		}
+		if (tree_mode_change) is_tree_mode = tree;
 
 		const int cmult = (per_core) ? Shared::coreCount : 1;
 		bool got_detailed = false;
@@ -1174,11 +1184,13 @@ namespace Proc {
 					//? Check if pid already exists in current_procs
 					bool no_cache = false;
 					auto find_old = rng::find(current_procs, pid, &proc_info::pid);
-					if (find_old == current_procs.end()) {
+					//? Only add new processes if not paused
+					if (find_old == current_procs.end() and not pause_proc_list) {
 						current_procs.push_back({pid});
 						find_old = current_procs.end() - 1;
 						no_cache = true;
 					}
+					else if (dead_procs.contains(pid)) continue;
 
 					auto &new_proc = *find_old;
 
@@ -1260,9 +1272,31 @@ namespace Proc {
 					}
 				}
 
-				// //? Clear dead processes from current_procs
-				auto eraser = rng::remove_if(current_procs, [&](const auto &element) { return not v_contains(found, element.pid); });
-				current_procs.erase(eraser.begin(), eraser.end());
+				//? Clear dead processes from current_procs if not paused
+				if (not pause_proc_list) {
+					auto eraser = rng::remove_if(current_procs, [&](const auto& element) { return not v_contains(found, element.pid); });
+					current_procs.erase(eraser.begin(), eraser.end());
+					if (!dead_procs.empty()) dead_procs.clear();
+				}
+				//? Set correct state of dead processes if paused
+				else {
+					for (auto& r : current_procs) {
+						if (rng::find(found, r.pid) == found.end()) {
+							if (r.state != 'X') {
+								struct timeval currentTime;
+								gettimeofday(&currentTime, nullptr);
+								r.death_time = currentTime.tv_sec - (r.cpu_s / 1'000'000);
+							}
+							r.state = 'X';
+							dead_procs.emplace(r.pid);
+							//? Reset cpu usage for dead processes if paused and option is set
+							if (!Config::getB("keep_dead_proc_usage")) {
+								r.cpu_p = 0.0;
+								r.mem = 0;
+							}
+						}
+					}
+				}
 
 				//? Update the details info box for process if active
 				if (show_detailed and got_detailed) {
@@ -1296,7 +1330,7 @@ namespace Proc {
 		}
 
 		//* Sort processes
-		if (sorted_change or not no_update) {
+		if ((sorted_change or tree_mode_change) or (not no_update and not pause_proc_list)) {
 			proc_sorter(current_procs, sorting, reverse, tree);
 		}
 
@@ -1341,8 +1375,10 @@ namespace Proc {
 			vector<tree_proc> tree_procs;
 			tree_procs.reserve(current_procs.size());
 
-			for (auto& p : current_procs) {
-				if (not v_contains(found, p.ppid)) p.ppid = 0;
+			if (!pause_proc_list) {
+				for (auto& p : current_procs) {
+					if (not v_contains(found, p.ppid)) p.ppid = 0;
+				}
 			}
 
 			//? Stable sort to retain selected sorting among processes with the same parent
@@ -1355,7 +1391,7 @@ namespace Proc {
 
 			//? Recursive sort over tree structure to account for collapsed processes in the tree
 			int index = 0;
-			tree_sort(tree_procs, sorting, reverse, index, current_procs.size());
+			tree_sort(tree_procs, sorting, reverse, (pause_proc_list and not (sorted_change or tree_mode_change)), index, current_procs.size());
 
 			//? Recursive construction of ASCII tree prefixes.
 			for (auto t = tree_procs.begin(); t != tree_procs.end(); ++t) {

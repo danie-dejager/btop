@@ -37,7 +37,6 @@ tab-size = 4
 #include <regex>
 #include <chrono>
 #include <utility>
-#include <variant>
 #include <semaphore>
 
 #ifdef __APPLE__
@@ -713,10 +712,11 @@ namespace Runner {
 			}
 
 			//? If overlay isn't empty, print output without color and then print overlay on top
-			cout << Term::sync_start << (conf.overlay.empty()
+			const bool term_sync = Config::getB("terminal_sync");
+			cout << (term_sync ? Term::sync_start : "") << (conf.overlay.empty()
 					? output
 					: (output.empty() ? "" : Fx::ub + Theme::c("inactive_fg") + Fx::uncolor(output)) + conf.overlay)
-				<< Term::sync_end << flush;
+				<< (term_sync ? Term::sync_end : "") << flush;
 		}
 		//* ----------------------------------------------- THREAD LOOP -----------------------------------------------
 		return {};
@@ -747,10 +747,12 @@ namespace Runner {
 		if (stopping or Global::resized) return;
 
 		if (box == "overlay") {
-			cout << Term::sync_start << Global::overlay << Term::sync_end << flush;
+			const bool term_sync = Config::getB("terminal_sync");
+			cout << (term_sync ? Term::sync_start : "") << Global::overlay << (term_sync ? Term::sync_end : "") << flush;
 		}
 		else if (box == "clock") {
-			cout << Term::sync_start << Global::clock << Term::sync_end << flush;
+			const bool term_sync = Config::getB("terminal_sync");
+			cout << (term_sync ? Term::sync_start : "") << Global::clock << (term_sync ? Term::sync_end : "") << flush;
 		}
 		else {
 			Config::unlock();
@@ -847,16 +849,16 @@ int main(const int argc, const char** argv) {
 		};
 
 		// Get the cli options or return with an exit code
-		auto cli_or_ret = Cli::parse(args);
-		if (std::holds_alternative<Cli::Cli>(cli_or_ret)) {
-			cli = std::get<Cli::Cli>(cli_or_ret);
+		auto result = Cli::parse(args);
+		if (result.has_value()) {
+			cli = result.value();
 		} else {
-			auto ret = std::get<std::int32_t>(cli_or_ret);
-			if (ret != 0) {
+			auto error = result.error();
+			if (error != 0) {
 				Cli::usage();
 				Cli::help_hint();
 			}
-			return ret;
+			return error;
 		}
 	}
 
@@ -914,7 +916,7 @@ int main(const int argc, const char** argv) {
 	init_config(cli.low_color, cli.filter);
 
 	//? Try to find and set a UTF-8 locale
-	if (std::setlocale(LC_ALL, "") != nullptr and not s_contains((string)std::setlocale(LC_ALL, ""), ";")
+	if (std::setlocale(LC_ALL, "") != nullptr and not std::string_view { std::setlocale(LC_ALL, "") }.contains(";")
 	and str_to_upper(s_replace((string)std::setlocale(LC_ALL, ""), "-", "")).ends_with("UTF8")) {
 		Logger::debug("Using locale " + std::locale().name());
 	}
@@ -1073,7 +1075,8 @@ int main(const int argc, const char** argv) {
 	Draw::calcSizes();
 
 	//? Print out box outlines
-	cout << Term::sync_start << Cpu::box << Mem::box << Net::box << Proc::box << Term::sync_end << flush;
+	const bool term_sync = Config::getB("terminal_sync");
+	cout << (term_sync ? Term::sync_start : "") << Cpu::box << Mem::box << Net::box << Proc::box << (term_sync ? Term::sync_end : "") << flush;
 
 
 	//? ------------------------------------------------ MAIN LOOP ----------------------------------------------------

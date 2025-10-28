@@ -17,6 +17,8 @@ tab-size = 4
 */
 
 #include <sys/resource.h>
+#include <filesystem>
+#include <fstream>
 #include <ranges>
 #include <regex>
 #include <string>
@@ -25,14 +27,17 @@ tab-size = 4
 #include "btop_shared.hpp"
 #include "btop_tools.hpp"
 
+namespace fs = std::filesystem;
 namespace rng = std::ranges;
 using namespace Tools;
 
 namespace Cpu {
+    std::optional<std::string> container_engine;
+
 	string trim_name(string name) {
 		auto name_vec = ssplit(name);
 
-		if ((s_contains(name, "Xeon"s) or v_contains(name_vec, "Duo"s)) and v_contains(name_vec, "CPU"s)) {
+		if ((name.contains("Xeon") or v_contains(name_vec, "Duo"s)) and v_contains(name_vec, "CPU"s)) {
 			auto cpu_pos = v_index(name_vec, "CPU"s);
 			if (cpu_pos < name_vec.size() - 1 and not name_vec.at(cpu_pos + 1).ends_with(')'))
 				name = name_vec.at(cpu_pos + 1);
@@ -48,7 +53,7 @@ namespace Cpu {
 					tokens++;
 				name += " " + p;
 			}
-		} else if (s_contains(name, "Intel"s) and v_contains(name_vec, "CPU"s)) {
+		} else if (name.contains("Intel") and v_contains(name_vec, "CPU"s)) {
 			auto cpu_pos = v_index(name_vec, "CPU"s);
 			if (cpu_pos < name_vec.size() - 1 and not name_vec.at(cpu_pos + 1).ends_with(')') and name_vec.at(cpu_pos + 1) != "@")
 				name = name_vec.at(cpu_pos + 1);
@@ -99,10 +104,10 @@ bool set_priority(pid_t pid, int priority) {
 		if (reverse) {
 			switch (v_index(sort_vector, sorting)) {
 			case 0: rng::stable_sort(proc_vec, rng::less{}, &proc_info::pid); 		break;
-			case 1: rng::stable_sort(proc_vec, rng::less{}, &proc_info::name);		break;
-			case 2: rng::stable_sort(proc_vec, rng::less{}, &proc_info::cmd); 		break;
+			case 1: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::name);		break;
+			case 2: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::cmd); 		break;
 			case 3: rng::stable_sort(proc_vec, rng::less{}, &proc_info::threads);	break;
-			case 4: rng::stable_sort(proc_vec, rng::less{}, &proc_info::user);		break;
+			case 4: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::user); 		break;
 			case 5: rng::stable_sort(proc_vec, rng::less{}, &proc_info::mem); 		break;
 			case 6: rng::stable_sort(proc_vec, rng::less{}, &proc_info::cpu_p);		break;
 			case 7: rng::stable_sort(proc_vec, rng::less{}, &proc_info::cpu_c);		break;
@@ -111,10 +116,10 @@ bool set_priority(pid_t pid, int priority) {
 		else {
 			switch (v_index(sort_vector, sorting)) {
 			case 0: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::pid); 		break;
-			case 1: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::name);		break;
-			case 2: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::cmd); 		break;
+			case 1: rng::stable_sort(proc_vec, rng::less{}, &proc_info::name);		break;
+			case 2: rng::stable_sort(proc_vec, rng::less{}, &proc_info::cmd); 		break;
 			case 3: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::threads);	break;
-			case 4: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::user); 		break;
+			case 4: rng::stable_sort(proc_vec, rng::less{}, &proc_info::user);		break;
 			case 5: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::mem); 		break;
 			case 6: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::cpu_p);   	break;
 			case 7: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::cpu_c);   	break;
@@ -139,8 +144,8 @@ bool set_priority(pid_t pid, int priority) {
 		}
 	}
 
-	void tree_sort(vector<tree_proc>& proc_vec, const string& sorting, bool reverse, int& c_index, const int index_max, bool collapsed) {
-		if (proc_vec.size() > 1) {
+	void tree_sort(vector<tree_proc>& proc_vec, const string& sorting, bool reverse, bool paused, int& c_index, const int index_max, bool collapsed) {
+		if (proc_vec.size() > 1 and not paused) {
 			if (reverse) {
 				switch (v_index(sort_vector, sorting)) {
 				case 3: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().threads < b.entry.get().threads; });	break;
@@ -162,7 +167,7 @@ bool set_priority(pid_t pid, int priority) {
 		for (auto& r : proc_vec) {
 			r.entry.get().tree_index = (collapsed or r.entry.get().filtered ? index_max : c_index++);
 			if (not r.children.empty()) {
-				tree_sort(r.children, sorting, reverse, c_index, (collapsed or r.entry.get().collapsed or r.entry.get().tree_index == (size_t)index_max));
+				tree_sort(r.children, sorting, reverse, paused, c_index, (collapsed or r.entry.get().collapsed or r.entry.get().tree_index == (size_t)index_max));
 			}
 		}
 	}
@@ -183,7 +188,7 @@ bool set_priority(pid_t pid, int priority) {
 			}
 		}
 
-		return s_contains(std::to_string(proc.pid), filter) || s_contains_ic(proc.name, filter) ||
+		return std::to_string(proc.pid).contains(filter) || s_contains_ic(proc.name, filter) ||
 					 s_contains_ic(proc.cmd, filter) || s_contains_ic(proc.user, filter);
 	}
 
@@ -234,14 +239,16 @@ bool set_priority(pid_t pid, int priority) {
 
 			if (not no_update and not filtering and (collapsed or cur_proc.collapsed)) {
 				//auto& parent = cur_proc;
-				cur_proc.cpu_p += p.cpu_p;
-				cur_proc.cpu_c += p.cpu_c;
-				cur_proc.mem += p.mem;
-				cur_proc.threads += p.threads;
+				if (p.state != 'X') {
+					cur_proc.cpu_p += p.cpu_p;
+					cur_proc.cpu_c += p.cpu_c;
+					cur_proc.mem += p.mem;
+					cur_proc.threads += p.threads;
+				}
 				filter_found++;
 				p.filtered = true;
 			}
-			else if (Config::getB("proc_aggregate")) {
+			else if (Config::getB("proc_aggregate") and p.state != 'X') {
 				cur_proc.cpu_p += p.cpu_p;
 				cur_proc.cpu_c += p.cpu_c;
 				cur_proc.mem += p.mem;
@@ -262,4 +269,24 @@ bool set_priority(pid_t pid, int priority) {
 				is_filtered ? "": header + (is_last ? "   ": " │ "));
 		}
 	}
+}
+
+auto detect_container() -> std::optional<std::string> {
+    std::error_code err;
+
+    if (fs::exists(fs::path("/run/.containerenv"), err)) {
+        return std::make_optional(std::string { "podman" });
+    }
+    if (fs::exists(fs::path("/.dockerenv"), err)) {
+        return std::make_optional(std::string { "docker" });
+    }
+    auto systemd_container = fs::path("/run/systemd/container");
+    if (fs::exists(systemd_container, err)) {
+        auto stream = std::ifstream { systemd_container };
+        auto buf = std::string {};
+        stream >> buf;
+        return std::make_optional(buf);
+    }
+
+    return std::nullopt;
 }

@@ -16,23 +16,29 @@ indent = tab
 tab-size = 4
 */
 
+#include <algorithm>
+#include <charconv>
+#include <cmath>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <future>
+#include <iterator>
+#include <numeric>
+#include <optional>
+#include <ranges>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
-#include <fstream>
-#include <ranges>
-#include <cmath>
-#include <unistd.h>
-#include <numeric>
-#include <sys/statvfs.h>
-#include <netdb.h>
+#include <utility>
+
+#include <arpa/inet.h> // for inet_ntop()
+#include <dlfcn.h>
 #include <ifaddrs.h>
 #include <net/if.h>
-#include <arpa/inet.h> // for inet_ntop()
-#include <filesystem>
-#include <future>
-#include <dlfcn.h>
-#include <utility>
+#include <netdb.h>
+#include <sys/statvfs.h>
+#include <unistd.h>
 
 #if defined(RSMI_STATIC)
 	#include <rocm_smi/rocm_smi.h>
@@ -313,18 +319,20 @@ namespace Shared {
 		}
 		Cpu::core_mapping = Cpu::get_core_mapping();
 
+		Cpu::container_engine = detect_container();
+
 		//? Init for namespace Gpu
 	#ifdef GPU_SUPPORT
 		auto shown_gpus = Config::getS("shown_gpus");
-		if (s_contains(shown_gpus, "nvidia")) {
+		if (shown_gpus.contains("nvidia")) {
 		    Gpu::Nvml::init();
 		}
 
-		if (s_contains(shown_gpus, "amd")) {
+		if (shown_gpus.contains("amd")) {
 			Gpu::Rsmi::init();
 		}
 
-		if (s_contains(shown_gpus, "intel")) {
+		if (shown_gpus.contains("intel")) {
 			Gpu::Intel::init();
 		}
 
@@ -422,7 +430,7 @@ namespace Cpu {
 					fs::path add_path = fs::canonical(dir.path());
 					if (v_contains(search_paths, add_path) or v_contains(search_paths, add_path / "device")) continue;
 
-					if (s_contains(add_path.c_str(), "coretemp"))
+					if (std::string_view { add_path.c_str() }.contains("coretemp"))
 						got_coretemp = true;
 
 					for (const auto & file : fs::directory_iterator(add_path)) {
@@ -467,7 +475,7 @@ namespace Cpu {
 						const int file_id = atoi(file.path().filename().c_str() + 4); // skip "temp" prefix
 						string file_path = file.path();
 
-						if (!s_contains(file_path, file_suffix) or s_contains(file_path, "nvme")) {
+						if (!file_path.contains(file_suffix) or file_path.contains("nvme")) {
 							continue;
 						}
 
@@ -530,7 +538,7 @@ namespace Cpu {
 
 		if (cpu_sensor.empty() and not found_sensors.empty()) {
 			for (const auto& [name, sensor] : found_sensors) {
-				if (s_contains(str_to_lower(name), "cpu") or s_contains(str_to_lower(name), "k10temp")) {
+				if (str_to_lower(name).contains("cpu") or str_to_lower(name).contains("k10temp")) {
 					cpu_sensor = name;
 					break;
 				}
@@ -990,6 +998,37 @@ namespace Cpu {
 		return watts;
 	}
 
+    static constexpr auto to_int(std::string_view view) {
+        std::uint32_t value {};
+        std::from_chars(view.data(), view.data() + view.size(), value);
+        return value;
+    }
+
+    static constexpr auto detect_active_cpus() {
+        auto stream = std::ifstream { "/sys/fs/cgroup/cpuset.cpus.effective" };
+        auto buf = std::string { std::istreambuf_iterator<char> { stream }, {} };
+
+        if (buf.empty()) {
+            return std::views::iota(0, Shared::coreCount) | std::ranges::to<std::vector<std::int32_t>>();
+        }
+
+        return buf | std::views::split(',') | std::views::transform([](auto&& range) -> auto {
+                   auto view = std::string_view { range };
+                   auto dash = view.find('-');
+
+                   if (dash == std::string_view::npos) {
+                       // Single CPU, return iota of single element
+                       auto value = to_int(view);
+                       return std::views::iota(value, value + 1);
+                   }
+
+                   auto start = to_int(view.substr(0, dash));
+                   auto end = to_int(view.substr(dash + 1));
+                   return std::views::iota(start, end + 1);
+               }) |
+               std::views::join | std::ranges::to<std::vector<std::int32_t>>();
+    }
+
 	auto collect(bool no_update) -> cpu_info& {
 		if (Runner::stopping or (no_update and not current_cpu.cpu_percent.at("total").empty())) return current_cpu;
 		auto& cpu = current_cpu;
@@ -1129,6 +1168,8 @@ namespace Cpu {
 
 		if (Config::getB("show_cpu_watts") and supports_watts)
 			current_cpu.usage_watts = get_cpuConsumptionWatts();
+
+		cpu.active_cpus = std::make_optional(detect_active_cpus());
 
 		return cpu;
 	}
@@ -2731,6 +2772,7 @@ namespace Proc {
 	string current_sort;
 	string current_filter;
 	bool current_rev{};
+	bool is_tree_mode;
 
 	fs::file_time_type passwd_time;
 
@@ -2743,6 +2785,7 @@ namespace Proc {
 	detail_container detailed;
 	constexpr size_t KTHREADD = 2;
 	static std::unordered_set<size_t> kernels_procs = {KTHREADD};
+	static std::unordered_set<size_t> dead_procs;
 
 	//* Get detailed info for selected process
 	static void _collect_details(const size_t pid, const uint64_t uptime, vector<proc_info>& procs) {
@@ -2764,7 +2807,8 @@ namespace Proc {
 		while (cmp_greater(detailed.cpu_percent.size(), width)) detailed.cpu_percent.pop_front();
 
 		//? Process runtime
-		detailed.elapsed = sec_to_dhms(uptime - (detailed.entry.cpu_s / Shared::clkTck));
+		if (detailed.entry.state != 'X') detailed.elapsed = sec_to_dhms(uptime - (detailed.entry.cpu_s / Shared::clkTck));
+		else detailed.elapsed = sec_to_dhms(detailed.entry.death_time);
 		if (detailed.elapsed.size() > 8) detailed.elapsed.resize(detailed.elapsed.size() - 3);
 
 		//? Get parent process name
@@ -2851,14 +2895,17 @@ namespace Proc {
 		auto should_filter_kernel = Config::getB("proc_filter_kernel");
 		auto tree = Config::getB("proc_tree");
 		auto show_detailed = Config::getB("show_detailed");
+		const auto pause_proc_list = Config::getB("pause_proc_list");
 		const size_t detailed_pid = Config::getI("detailed_pid");
 		bool should_filter = current_filter != filter;
 		if (should_filter) current_filter = filter;
 		bool sorted_change = (sorting != current_sort or reverse != current_rev or should_filter);
+		bool tree_mode_change = tree != is_tree_mode;
 		if (sorted_change) {
 			current_sort = sorting;
 			current_rev = reverse;
 		}
+		if (tree_mode_change) is_tree_mode = tree;
 		ifstream pread;
 		string long_string;
 		string short_str;
@@ -2946,11 +2993,13 @@ namespace Proc {
 				//? Check if pid already exists in current_procs
 				auto find_old = rng::find(current_procs, pid, &proc_info::pid);
 				bool no_cache{};
-				if (find_old == current_procs.end()) {
+				//? Only add new processes if not paused
+				if (find_old == current_procs.end() and not pause_proc_list) {
 					current_procs.push_back({pid});
 					find_old = current_procs.end() - 1;
 					no_cache = true;
 				}
+				else if (dead_procs.contains(pid)) continue;
 
 				auto& new_proc = *find_old;
 
@@ -3105,9 +3154,27 @@ namespace Proc {
 				}
 			}
 
-			//? Clear dead processes from current_procs and remove kernel processes if enabled
-			auto eraser = rng::remove_if(current_procs, [&](const auto& element){ return not v_contains(found, element.pid); });
-			current_procs.erase(eraser.begin(), eraser.end());
+			//? Clear dead processes from current_procs and remove kernel processes if enabled and not paused
+			if (not pause_proc_list) {
+				auto eraser = rng::remove_if(current_procs, [&](const auto& element){ return not v_contains(found, element.pid); });
+				current_procs.erase(eraser.begin(), eraser.end());
+				if (!dead_procs.empty()) dead_procs.clear();
+			}
+			//? Set correct state of dead processes if paused
+			else {
+				for (auto& r : current_procs) {
+					if (rng::find(found, r.pid) == found.end()) {
+						if (r.state != 'X') r.death_time = round(uptime) - (r.cpu_s / Shared::clkTck);
+						r.state = 'X';
+						dead_procs.emplace(r.pid);
+						//? Reset cpu usage for dead processes if paused and option is set
+						if (!Config::getB("keep_dead_proc_usage")) {
+							r.cpu_p = 0.0;
+							r.mem = 0;
+						}
+					}
+				}
+			}
 
 			//? Update the details info box for process if active
 			if (show_detailed and got_detailed) {
@@ -3140,7 +3207,7 @@ namespace Proc {
 		}
 
 		//* Sort processes
-		if (sorted_change or not no_update) {
+		if ((sorted_change or tree_mode_change) or (not no_update and not pause_proc_list)) {
 			proc_sorter(current_procs, sorting, reverse, tree);
 		}
 
@@ -3185,8 +3252,10 @@ namespace Proc {
 			vector<tree_proc> tree_procs;
 			tree_procs.reserve(current_procs.size());
 
-			for (auto& p : current_procs) {
-				if (not v_contains(found, p.ppid)) p.ppid = 0;
+			if (!pause_proc_list) {
+				for (auto& p : current_procs) {
+					if (not v_contains(found, p.ppid)) p.ppid = 0;
+				}
 			}
 
 			//? Stable sort to retain selected sorting among processes with the same parent
@@ -3199,7 +3268,7 @@ namespace Proc {
 
 			//? Recursive sort over tree structure to account for collapsed processes in the tree
 			int index = 0;
-			tree_sort(tree_procs, sorting, reverse, index, current_procs.size());
+			tree_sort(tree_procs, sorting, reverse, (pause_proc_list and not (sorted_change or tree_mode_change)), index, current_procs.size());
 
 			//? Recursive construction of ASCII tree prefixes.
 			for (auto t = tree_procs.begin(); t != tree_procs.end(); ++t) {
