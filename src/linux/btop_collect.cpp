@@ -2994,10 +2994,13 @@ namespace Proc {
 				auto find_old = rng::find(current_procs, pid, &proc_info::pid);
 				bool no_cache{};
 				//? Only add new processes if not paused
-				if (find_old == current_procs.end() and not pause_proc_list) {
-					current_procs.push_back({pid});
-					find_old = current_procs.end() - 1;
-					no_cache = true;
+				if (find_old == current_procs.end()) {
+					if (not pause_proc_list) {
+						current_procs.push_back({pid});
+						find_old = current_procs.end() - 1;
+						no_cache = true;
+					}
+					else continue;
 				}
 				else if (dead_procs.contains(pid)) continue;
 
@@ -3276,7 +3279,7 @@ namespace Proc {
 			}
 
 			//? Final sort based on tree index
-			rng::sort(current_procs, rng::less{}, & proc_info::tree_index);
+			rng::stable_sort(current_procs, rng::less {}, &proc_info::tree_index);
 
 			//? Move current selection/view to the selected process when collapsing/expanding in the tree
 			if (locate_selection) {
