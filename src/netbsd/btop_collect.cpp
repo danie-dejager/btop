@@ -52,6 +52,7 @@ tab-size = 4
 #include <kvm.h>
 #include <paths.h>
 #include <fcntl.h>
+#include <regex.h>
 #include <unistd.h>
 #include <uvm/uvm_extern.h>
 
@@ -67,7 +68,10 @@ tab-size = 4
 #include <utility>
 #include <unordered_set>
 
+#include <fmt/format.h>
+
 #include "../btop_config.hpp"
+#include "../btop_log.hpp"
 #include "../btop_shared.hpp"
 #include "../btop_tools.hpp"
 
@@ -221,17 +225,17 @@ namespace Cpu {
 		prop_object_t fields_array;
 		// List of common thermal sensors in NetBSD.
 		const string sensors[6] = {
-			"acpitz0",
-			"acpitz1",
 			"coretemp0",
-			"coretemp1",
+			"acpitz0",
 			"thinkpad0",
-			"amdzentemp0"
+			"amdzentemp0",
+			"coretemp1",
+			"acpitz1"
 		};
 
 		int fd = open(_PATH_SYSMON, O_RDONLY);
 		if (fd == -1) {
-			Logger::warning("failed to open " + string(_PATH_SYSMON));
+			Logger::warning("failed to open {}", _PATH_SYSMON);
 			return got_sensors;
 		}
 
@@ -243,10 +247,9 @@ namespace Cpu {
 			return got_sensors;
 		}
 
+		close(fd);
+
 		if (prop_dictionary_count(dict) == 0) {
-			if (fd != -1) {
-				close(fd);
-			}
 			Logger::warning("no drivers registered for envsys");
 			return got_sensors;
 		}
@@ -255,22 +258,20 @@ namespace Cpu {
 		for(const string &sensor : sensors) {
 			fields_array = prop_dictionary_get(prop_dictionary_t(dict), sensor.c_str());
 			if (prop_object_type(fields_array) != PROP_TYPE_ARRAY) {
-				Logger::warning("unknown device " + sensor);
+				Logger::warning("unknown device {}", sensor);
 			} else {
 				Cpu::cpu_sensor = sensor;
 				break;
 			}
 		}
 		if (prop_object_type(fields_array) != PROP_TYPE_ARRAY) {
-			if (fd != -1) {
-				close(fd);
-			}
 			return got_sensors;
 		}
 
 		if (Config::getB("show_coretemp") and Config::getB("check_temp")) {
 			got_sensors = true;
 		}
+
 		return got_sensors;
 	}
 
@@ -283,7 +284,7 @@ namespace Cpu {
 
 		int fd = open(_PATH_SYSMON, O_RDONLY);
 		if (fd == -1) {
-			Logger::warning("failed to open " + string(_PATH_SYSMON));
+			Logger::warning("failed to open {}", _PATH_SYSMON);
 			return;
 		}
 
@@ -295,32 +296,32 @@ namespace Cpu {
 			return;
 		}
 
+		close(fd);
+
 		if (prop_dictionary_count(dict) == 0) {
-			if (fd != -1) {
-				close(fd);
-			}
 			Logger::warning("no drivers registered for envsys");
 			return;
 		}
 
 		prop_object_t fields_array = prop_dictionary_get(prop_dictionary_t(dict), Cpu::cpu_sensor.c_str());
 		if (prop_object_type(fields_array) != PROP_TYPE_ARRAY) {
-			if (fd != -1) {
-				close(fd);
-			}
-			Logger::warning("unknown device " + Cpu::cpu_sensor);
+			Logger::warning("unknown device {}", Cpu::cpu_sensor);
 			return;
 		}
 
 		prop_object_iterator_t fields_iter = prop_array_iterator(prop_array_t(fields_array));
 		if (fields_iter == NULL) {
-			if (fd != -1) {
-				close(fd);
-			}
+			return;
+		}
+
+		regex_t r;
+		if (regcomp(&r, "(cpu[0-9]* )*temperature", REG_EXTENDED)) {
+			Logger::warning("regcomp() failed");
 			return;
 		}
 
 		string prop_description = "no description";
+		char buf[64];
 		while ((fields = (prop_dictionary_t) prop_object_iterator_next(prop_object_iterator_t(fields_iter))) != NULL) {
 			props = (prop_dictionary_t) prop_dictionary_get(fields, "device-properties");
 			if (props != NULL) continue;
@@ -334,15 +335,18 @@ namespace Cpu {
 			}
 
 
-			prop_description = prop_string_cstring(prop_string_t(description));
+			prop_string_copy_value(prop_string_t(description), buf, sizeof buf);
+			prop_description = buf;
 
-			if (prop_description == "temperature") {
-				current_temp = prop_number_integer_value(prop_number_t(cur_value));
+			if (regexec(&r, prop_description.c_str(), 0, NULL, 0) == 0) {
+				current_temp = prop_number_signed_value(prop_number_t(cur_value));
 				if (max_value != NULL) {
-					current_cpu.temp_max = MUKTOC(prop_number_integer_value(prop_number_t(max_value)));
+					current_cpu.temp_max = MUKTOC(prop_number_signed_value(prop_number_t(max_value)));
 				}
 			}
 		}
+
+		regfree(&r);
 
 		prop_object_iterator_release(fields_iter);
 		prop_object_release(dict);
@@ -428,7 +432,7 @@ namespace Cpu {
 
 		int fd = open(_PATH_SYSMON, O_RDONLY);
 		if (fd == -1) {
-			Logger::warning("failed to open " + string(_PATH_SYSMON));
+			Logger::warning("failed to open {}", _PATH_SYSMON);
 			has_battery = false;
 			return {0, 0.0, 0, ""};
 		}
@@ -442,10 +446,9 @@ namespace Cpu {
 			return {0, 0.0, 0, ""};
 		}
 
+		close(fd);
+
 		if (prop_dictionary_count(dict) == 0) {
-			if (fd != -1) {
-				close(fd);
-			}
 			has_battery = false;
 			Logger::warning("no drivers registered for envsys");
 			return {0, 0.0, 0, ""};
@@ -453,9 +456,6 @@ namespace Cpu {
 
 		prop_object_t fields_array = prop_dictionary_get(prop_dictionary_t(dict), "acpibat0");
 		if (prop_object_type(fields_array) != PROP_TYPE_ARRAY) {
-			if (fd != -1) {
-				close(fd);
-			}
 			has_battery = false;
 			Logger::warning("unknown device 'acpibat0'");
 			return {0, 0.0, 0, ""};
@@ -463,9 +463,6 @@ namespace Cpu {
 
 		prop_object_iterator_t fields_iter = prop_array_iterator(prop_array_t(fields_array));
 		if (fields_iter == NULL) {
-			if (fd != -1) {
-				close(fd);
-			}
 			has_battery = false;
 			return {0, 0.0, 0, ""};
 		}
@@ -477,6 +474,7 @@ namespace Cpu {
 		int64_t max_charge = 0;
 		string status = "unknown";
 		string prop_description = "no description";
+		char buf[64];
 
 		while ((fields = (prop_dictionary_t) prop_object_iterator_next(prop_object_iterator_t(fields_iter))) != NULL) {
 			props = (prop_dictionary_t) prop_dictionary_get(fields, "device-properties");
@@ -491,23 +489,26 @@ namespace Cpu {
 			}
 
 
-			prop_description = prop_string_cstring(prop_string_t(description));
+			prop_string_copy_value(prop_string_t(description), buf, sizeof buf);
+			prop_description = buf;
 
 			if (prop_description == "charge") {
 				if (max_value == NULL) {
 					continue;
 				}
-				cur_charge = prop_number_integer_value(prop_number_t(cur_value));
-				max_charge = prop_number_integer_value(prop_number_t(max_value));
+				cur_charge = prop_number_signed_value(prop_number_t(cur_value));
+				max_charge = prop_number_signed_value(prop_number_t(max_value));
 			}
 
 			if (prop_description == "present") {
-				is_present = prop_number_integer_value(prop_number_t(cur_value));
+				is_present = prop_number_signed_value(prop_number_t(cur_value));
 			}
 
 			if (prop_description == "charging") {
 				status = prop_description;
-				string charging_type = prop_string_cstring(prop_string_t(prop_dictionary_get(fields, "type")));
+				char buf[64];
+				prop_string_copy_value(prop_string_t(prop_dictionary_get(fields, "type")), buf, sizeof buf);
+				string charging_type = buf;
 				is_battery = charging_type == "Battery charge" ? true : false;
 			}
 
@@ -577,9 +578,9 @@ namespace Cpu {
 				//? Reduce size if there are more values than needed for graph
 				if (cpu.core_percent.at(i).size() > 40) cpu.core_percent.at(i).pop_front();
 
-			} catch (const std::exception &e) {
-				Logger::error("Cpu::collect() : " + (string)e.what());
-				throw std::runtime_error("collect() : " + (string)e.what());
+			} catch (const std::exception& e) {
+				Logger::error("Cpu::collect() : {}", e.what());
+				throw std::runtime_error(fmt::format("collect() : {}", e.what()));
 			}
 
 		}
@@ -826,7 +827,7 @@ namespace Mem {
 					continue;
 				struct statvfs vfs;
 				if (statvfs(mountpoint.c_str(), &vfs) < 0) {
-					Logger::warning("Failed to get disk/partition stats with statvfs() for: " + mountpoint);
+					Logger::warning("Failed to get disk/partition stats with statvfs() for: {}", mountpoint);
 					continue;
 				}
 				disk.total = vfs.f_blocks * vfs.f_frsize;
@@ -894,7 +895,7 @@ namespace Net {
 			IfAddrsPtr if_addrs {};
 			if (if_addrs.get_status() != 0) {
 				errors++;
-				Logger::error("Net::collect() -> getifaddrs() failed with id " + to_string(if_addrs.get_status()));
+				Logger::error("Net::collect() -> getifaddrs() failed with id {}", if_addrs.get_status());
 				redraw = true;
 				return empty_net;
 			}
@@ -929,7 +930,7 @@ namespace Net {
 							net[iface].ipv4 = ip;
 						} else {
 							int errsv = errno;
-							Logger::error("Net::collect() -> Failed to convert IPv4 to string for iface " + string(iface) + ", errno: " + strerror(errsv));
+							Logger::error("Net::collect() -> Failed to convert IPv4 to string for iface {}, errno: {}", iface, strerror(errsv));
 						}
 					}
 				}
@@ -940,7 +941,7 @@ namespace Net {
 							net[iface].ipv6 = ip;
 						} else {
 							int errsv = errno;
-							Logger::error("Net::collect() -> Failed to convert IPv6 to string for iface " + string(iface) + ", errno: " + strerror(errsv));
+							Logger::error("Net::collect() -> Failed to convert IPv6 to string for iface {}, errno: {}", iface, strerror(errsv));
 						}
 					}
 				}  //else, ignoring family==AF_LINK (see man 3 getifaddrs)

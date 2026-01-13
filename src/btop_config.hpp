@@ -62,6 +62,8 @@ namespace Config {
 	extern vector<string> available_batteries;
 	extern int current_preset;
 
+	extern bool write_new;
+
 	constexpr int ONE_DAY_MILLIS = 1000 * 60 * 60 * 24;
 
 	[[nodiscard]] std::optional<std::filesystem::path> get_config_dir() noexcept;
@@ -132,4 +134,7 @@ namespace Config {
 	void write();
 
 	auto get_log_file() -> std::optional<std::filesystem::path>;
+
+	// Write default config to an in-memory buffer
+	[[nodiscard]] auto current_config() -> std::string;
 }

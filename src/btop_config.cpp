@@ -20,16 +20,19 @@ tab-size = 4
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <locale>
 #include <optional>
 #include <ranges>
 #include <string_view>
 #include <utility>
 
+#include <fmt/base.h>
 #include <fmt/core.h>
 #include <sys/statvfs.h>
 
 #include "btop_config.hpp"
+#include "btop_log.hpp"
 #include "btop_shared.hpp"
 #include "btop_tools.hpp"
 
@@ -69,6 +72,7 @@ namespace Config {
 		{"vim_keys",			"#* Set to True to enable \"h,j,k,l,g,G\" keys for directional control in lists.\n"
 								"#* Conflicting keys for h:\"help\" and k:\"kill\" is accessible while holding shift."},
 
+		{"disable_mouse", "#* Disable all mouse events."},
 		{"rounded_corners",		"#* Rounded corners on boxes, is ignored if TTY mode is ON."},
 
 		{"terminal_sync", 		"#* Use terminal synchronized output sequences to reduce flickering on supported terminals."},
@@ -115,6 +119,8 @@ namespace Config {
 		{"proc_left",			"#* Show proc box on left side of screen instead of right."},
 
 		{"proc_filter_kernel",  "#* (Linux) Filter processes tied to the Linux kernel(similar behavior to htop)."},
+
+		{"proc_follow_detailed",	"#* Should the process list follow the selected process when detailed view is open."},
 
 		{"proc_aggregate",		"#* In tree-view, always accumulate child process resources in the parent process."},
 
@@ -196,6 +202,8 @@ namespace Config {
 		{"io_graph_speeds", 	"#* Set the top speed for the io graphs in MiB/s (100 by default), use format \"mountpoint:speed\" separate disks with whitespace \" \".\n"
 								"#* Example: \"/mnt/media:100 /:20 /boot:1\"."},
 
+		{"swap_upload_download", "#* Swap the positions of the upload and download speed graphs. When true, upload will be on top."},
+
 		{"net_download", 		"#* Set fixed values for network graphs in Mebibits. Is only used if net_auto is also set to False."},
 
 		{"net_upload", ""},
@@ -214,8 +222,9 @@ namespace Config {
 
 		{"show_battery_watts",	"#* Show power stats of battery next to charge indicator."},
 
-		{"log_level", 			"#* Set loglevel for \"~/.config/btop/btop.log\" levels are: \"ERROR\" \"WARNING\" \"INFO\" \"DEBUG\".\n"
+		{"log_level", 			"#* Set loglevel for \"~/.local/state/btop.log\" levels are: \"ERROR\" \"WARNING\" \"INFO\" \"DEBUG\".\n"
 								"#* The level set includes all lower levels, i.e. \"DEBUG\" will show all logging info."},
+		{"save_config_on_exit",  "#* Automatically save current settings to config file on exit."},
 	#ifdef GPU_SUPPORT
 
 		{"nvml_measure_pcie_speeds",
@@ -310,6 +319,7 @@ namespace Config {
 		{"zfs_hide_datasets", false},
 		{"show_io_stat", true},
 		{"io_mode", false},
+		{"swap_upload_download", false},
 		{"base_10_sizes", false},
 		{"io_graph_combined", false},
 		{"net_auto", true},
@@ -326,12 +336,18 @@ namespace Config {
 		{"proc_aggregate", false},
 		{"pause_proc_list", false},
 		{"keep_dead_proc_usage", false},
+		{"proc_banner_shown", false},
+		{"proc_follow_detailed", true},
+		{"follow_process", false},
+		{"update_following", false},
 	#ifdef GPU_SUPPORT
 		{"nvml_measure_pcie_speeds", true},
 		{"rsmi_measure_pcie_speeds", true},
 		{"gpu_mirror_graph", true},
 	#endif
-		{"terminal_sync", true}
+		{"terminal_sync", true},
+		{"save_config_on_exit", true},
+		{"disable_mouse", false},
 	};
 	std::unordered_map<std::string_view, bool> boolsTmp;
 
@@ -341,10 +357,12 @@ namespace Config {
 		{"net_upload", 100},
 		{"detailed_pid", 0},
 		{"selected_pid", 0},
+		{"followed_pid", 0},
 		{"selected_depth", 0},
 		{"proc_start", 0},
 		{"proc_selected", 0},
-		{"proc_last_selected", 0}
+		{"proc_last_selected", 0},
+		{"proc_followed", 0},
 	};
 	std::unordered_map<std::string_view, int> intsTmp;
 
@@ -488,7 +506,7 @@ namespace Config {
 			if (vals.at(0).starts_with("gpu")) {
 				set("graph_symbol_gpu", vals.at(2));
 			} else {
-				set("graph_symbol_" + vals.at(0), vals.at(2));
+				set(strings.find("graph_symbol_" + vals.at(0))->first, vals.at(2));
 			}
 		}
 
@@ -782,20 +800,9 @@ namespace Config {
 		Logger::debug("Writing new config file");
 		if (geteuid() != Global::real_uid and seteuid(Global::real_uid) != 0) return;
 		std::ofstream cwrite(conf_file, std::ios::trunc);
-		cwrite.imbue(std::locale::classic());
+		// TODO: Report error when stream is in a bad state.
 		if (cwrite.good()) {
-			cwrite << "#? Config file for btop v. " << Global::Version << "\n";
-			for (const auto& [name, description] : descriptions) {
-				cwrite << "\n" << (description.empty() ? "" : description + "\n")
-						<< name << " = ";
-				if (strings.contains(name))
-					cwrite << "\"" << strings.at(name) << "\"";
-				else if (ints.contains(name))
-					cwrite << ints.at(name);
-				else if (bools.contains(name))
-					cwrite << (bools.at(name) ? "True" : "False");
-				cwrite << "\n";
-			}
+			cwrite << current_config();
 		}
 	}
 
@@ -827,5 +834,30 @@ namespace Config {
 
 	auto get_log_file() -> std::optional<fs::path> {
 		return get_xdg_state_dir().transform([](auto&& state_home) -> auto { return state_home / "btop.log"; });
+	}
+
+	auto current_config() -> std::string {
+		auto buffer = std::string {};
+		fmt::format_to(std::back_inserter(buffer), "#? Config file for btop v.{}\n", Global::Version);
+
+		for (const auto& [name, description] : descriptions) {
+			// Write a description comment if available.
+			fmt::format_to(std::back_inserter(buffer), "\n");
+			if (!description.empty()) {
+				fmt::format_to(std::back_inserter(buffer), "{}\n", description);
+			}
+
+			fmt::format_to(std::back_inserter(buffer), "{} = ", name);
+			// Lookup default value by name and write it out.
+			if (strings.contains(name)) {
+				fmt::format_to(std::back_inserter(buffer), R"("{}")", strings[name]);
+			} else if (ints.contains(name)) {
+				fmt::format_to(std::back_inserter(buffer), std::locale::classic(), "{:L}", ints[name]);
+			} else if (bools.contains(name)) {
+				fmt::format_to(std::back_inserter(buffer), "{}", bools[name] ? "true" : "false");
+			}
+			fmt::format_to(std::back_inserter(buffer), "\n");
+		}
+		return buffer;
 	}
 }

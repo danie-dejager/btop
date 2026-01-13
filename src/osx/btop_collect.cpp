@@ -56,7 +56,10 @@ tab-size = 4
 #include <string>
 #include <unordered_set>
 
+#include <fmt/format.h>
+
 #include "../btop_config.hpp"
+#include "../btop_log.hpp"
 #include "../btop_shared.hpp"
 #include "../btop_tools.hpp"
 
@@ -64,6 +67,10 @@ tab-size = 4
 #include "sensors.hpp"
 #endif
 #include "smc.hpp"
+
+#if __MAC_OS_X_VERSION_MIN_REQUIRED < 120000
+#define kIOMainPortDefault kIOMasterPortDefault
+#endif
 
 using std::clamp, std::string_literals::operator""s, std::cmp_equal, std::cmp_less, std::cmp_greater;
 using std::ifstream, std::numeric_limits, std::streamsize, std::round, std::max, std::min;
@@ -218,7 +225,7 @@ namespace Cpu {
 	}
 
 	bool get_sensors() {
-		Logger::debug("get_sensors(): show_coretemp=" + std::to_string(Config::getB("show_coretemp")) + " check_temp=" + std::to_string(Config::getB("check_temp")));
+		Logger::debug("get_sensors(): show_coretemp={} check_temp={}", Config::getB("show_coretemp"), Config::getB("check_temp"));
 		got_sensors = false;
 		if (Config::getB("show_coretemp") and Config::getB("check_temp")) {
 #if __MAC_OS_X_VERSION_MIN_REQUIRED > 101504
@@ -252,7 +259,7 @@ namespace Cpu {
 						got_sensors = false;
 					}
 				} catch (std::runtime_error &e) {
-					Logger::debug("SMC not available: " + string(e.what()));
+					Logger::debug("SMC not available: {}", e.what());
 					// ignore, we don't have temp (common in VMs)
 					got_sensors = false;
 				}
@@ -474,8 +481,8 @@ namespace Cpu {
 				if (cpu.core_percent.at(i).size() > 40) cpu.core_percent.at(i).pop_front();
 
 			} catch (const std::exception &e) {
-				Logger::error("Cpu::collect() : " + (string)e.what());
-				throw std::runtime_error("collect() : " + (string)e.what());
+				Logger::error("Cpu::collect() : {}", e.what());
+				throw std::runtime_error(fmt::format("collect() : {}", e.what()));
 			}
 		}
 
@@ -758,7 +765,7 @@ namespace Mem {
 					continue;
 				struct statvfs vfs;
 				if (statvfs(mountpoint.c_str(), &vfs) < 0) {
-					Logger::warning("Failed to get disk/partition stats with statvfs() for: " + mountpoint);
+					Logger::warning("Failed to get disk/partition stats with statvfs() for: {}", mountpoint);
 					continue;
 				}
 				disk.total = vfs.f_blocks * vfs.f_frsize;
@@ -839,7 +846,7 @@ namespace Net {
 			getifaddr_wrapper if_wrap{};
 			if (if_wrap.status != 0) {
 				errors++;
-				Logger::error("Net::collect() -> getifaddrs() failed with id " + to_string(if_wrap.status));
+				Logger::error("Net::collect() -> getifaddrs() failed with id {}", if_wrap.status);
 				redraw = true;
 				return empty_net;
 			}
@@ -872,7 +879,7 @@ namespace Net {
 							net[iface].ipv4 = ip;
 						} else {
 							int errsv = errno;
-							Logger::error("Net::collect() -> Failed to convert IPv4 to string for iface " + string(iface) + ", errno: " + strerror(errsv));
+							Logger::error("Net::collect() -> Failed to convert IPv4 to string for iface {}, errno: {}", iface, strerror(errsv));
 						}
 					}
 				}
@@ -883,7 +890,7 @@ namespace Net {
 							net[iface].ipv6 = ip;
 						} else {
 							int errsv = errno;
-							Logger::error("Net::collect() -> Failed to convert IPv6 to string for iface " + string(iface) + ", errno: " + strerror(errsv));
+							Logger::error("Net::collect() -> Failed to convert IPv6 to string for iface {}, errno: {}", iface, strerror(errsv));
 						}
 					}
 				} // else, ignoring family==AF_LINK (see man 3 getifaddrs)

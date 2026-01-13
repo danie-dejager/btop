@@ -49,16 +49,24 @@ tab-size = 4
 	#include <limits.h>
 #endif
 
+#ifdef __NetBSD__
+	#include <sys/param.h>
+	#include <sys/sysctl.h>
+	#include <unistd.h>
+#endif
+
+#include <fmt/core.h>
+#include <fmt/ostream.h>
+
 #include "btop_cli.hpp"
-#include "btop_shared.hpp"
-#include "btop_tools.hpp"
 #include "btop_config.hpp"
-#include "btop_input.hpp"
-#include "btop_theme.hpp"
 #include "btop_draw.hpp"
+#include "btop_input.hpp"
+#include "btop_log.hpp"
 #include "btop_menu.hpp"
-#include "fmt/core.h"
-#include "fmt/ostream.h"
+#include "btop_shared.hpp"
+#include "btop_theme.hpp"
+#include "btop_tools.hpp"
 
 using std::atomic;
 using std::cout;
@@ -84,7 +92,7 @@ namespace Global {
 		{"#801414", "██████╔╝   ██║   ╚██████╔╝██║        ╚═╝    ╚═╝"},
 		{"#000000", "╚═════╝    ╚═╝    ╚═════╝ ╚═╝"},
 	};
-	const string Version = "1.4.5";
+	const string Version = "1.4.6";
 
 	int coreCount;
 	string overlay;
@@ -219,7 +227,10 @@ void clean_quit(int sig) {
 	Gpu::Rsmi::shutdown();
 #endif
 
-	Config::write();
+
+	if (Config::getB("save_config_on_exit")) {
+		Config::write();
+	}
 
 	if (Term::initialized) {
 		Input::clear();
@@ -228,10 +239,10 @@ void clean_quit(int sig) {
 
 	if (not Global::exit_error_msg.empty()) {
 		sig = 1;
-		Logger::error(Global::exit_error_msg);
+		Logger::error("{}", Global::exit_error_msg);
 		fmt::println(std::cerr, "{}ERROR: {}{}{}", Global::fg_red, Global::fg_white, Global::exit_error_msg, Fx::reset);
 	}
-	Logger::info("Quitting! Runtime: " + sec_to_dhms(time_s() - Global::start_time));
+	Logger::info("Quitting! Runtime: {}", sec_to_dhms(time_s() - Global::start_time));
 
 	const auto excode = (sig != -1 ? sig : 0);
 
@@ -317,10 +328,10 @@ void init_config(bool low_color, std::optional<std::string>& filter) {
 	static bool first_init = true;
 
 	if (Global::debug and first_init) {
-		Logger::set("DEBUG");
+		Logger::set_log_level(Logger::Level::DEBUG);
 		Logger::debug("Running in DEBUG mode!");
 	}
-	else Logger::set(Config::getS("log_level"));
+	else Logger::set_log_level(Config::getS("log_level"));
 
 	if (filter.has_value()) {
 		Config::set("proc_filter", filter.value());
@@ -329,10 +340,10 @@ void init_config(bool low_color, std::optional<std::string>& filter) {
 	static string log_level;
 	if (const string current_level = Config::getS("log_level"); log_level != current_level) {
 		log_level = current_level;
-		Logger::info("Logger set to " + (Global::debug ? "DEBUG" : log_level));
+		Logger::info("Logger set to {}", (Global::debug ? "DEBUG" : log_level));
 	}
 
-	for (const auto& err_str : load_warnings) Logger::warning(err_str);
+	for (const auto& err_str : load_warnings) Logger::warning("{}", err_str);
 	first_init = false;
 }
 
@@ -517,7 +528,9 @@ namespace Runner {
 			#ifdef GPU_SUPPORT
 				//? GPU data collection
 				const bool gpu_in_cpu_panel = Gpu::gpu_names.size() > 0 and (
-					Config::getS("cpu_graph_lower").starts_with("gpu-") or Config::getS("cpu_graph_upper").starts_with("gpu-")
+					Config::getS("cpu_graph_lower").starts_with("gpu-")
+					or (Config::getS("cpu_graph_lower") == "Auto")
+					or Config::getS("cpu_graph_upper").starts_with("gpu-")
 					or (Gpu::shown == 0 and Config::getS("show_gpu_info") != "Off")
 				);
 
@@ -740,7 +753,7 @@ namespace Runner {
 			void* thread_result;
 			int join_result = pthread_join(Runner::runner_id, &thread_result);
 			if (join_result != 0) {
-				Logger::warning("Failed to join cancelled thread: " + string(strerror(join_result)));
+				Logger::warning("Failed to join cancelled thread: {}", strerror(join_result));
 			}
 
 			if (pthread_create(&Runner::runner_id, nullptr, &Runner::_runner, nullptr) != 0) {
@@ -822,7 +835,7 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
   	}
 #endif
 
-	Logger::debug(fmt::format("TTY mode enabled: {}", Config::getB("tty_mode")));
+	Logger::debug("TTY mode enabled: {}", Config::getB("tty_mode"));
 }
 
 
@@ -871,14 +884,19 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 			} else {
 				Config::conf_file = Config::conf_dir / "btop.conf";
 			}
-			Logger::logfile = Config::get_log_file();
+
+			auto log_file = Config::get_log_file();
+			if (log_file.has_value()) {
+				Logger::init(log_file.value());
+			}
+
 			Theme::user_theme_dir = Config::conf_dir / "themes";
 
 			// If necessary create the user theme directory
 			std::error_code error;
 			if (not fs::exists(Theme::user_theme_dir, error) and not fs::create_directories(Theme::user_theme_dir, error)) {
 				Theme::user_theme_dir.clear();
-				Logger::warning("Failed to create user theme directory: " + error.message());
+				Logger::warning("Failed to create user theme directory: {}", error.message());
 			}
 		}
 	}
@@ -893,6 +911,19 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 		char buf [PATH_MAX];
 		uint32_t bufsize = PATH_MAX;
 		if(!_NSGetExecutablePath(buf, &bufsize))
+			Global::self_path = fs::path(buf).remove_filename();
+	}
+#elif __NetBSD__
+	{
+		int mib[4];
+		char buf[PATH_MAX];
+		size_t bufsize = sizeof buf;
+
+		mib[0] = CTL_KERN;
+		mib[1] = KERN_PROC_ARGS;
+		mib[2] = getpid();
+		mib[3] = KERN_PROC_PATHNAME;
+		if (sysctl(mib, 4, buf, &bufsize, NULL, 0) == 0)
 			Global::self_path = fs::path(buf).remove_filename();
 	}
 #endif
@@ -910,13 +941,19 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 		}
 	}
 
+	//? Set custom themes directory from command line if provided
+	if (cli.themes_dir.has_value()) {
+		Theme::custom_theme_dir = cli.themes_dir.value();
+		Logger::info("Using custom themes directory: {}", Theme::custom_theme_dir.string());
+	}
+
 	//? Config init
 	init_config(cli.low_color, cli.filter);
 
 	//? Try to find and set a UTF-8 locale
 	if (std::setlocale(LC_ALL, "") != nullptr and not std::string_view { std::setlocale(LC_ALL, "") }.contains(";")
 	and str_to_upper(s_replace((string)std::setlocale(LC_ALL, ""), "-", "")).ends_with("UTF8")) {
-		Logger::debug("Using locale " + std::locale().name());
+		Logger::debug("Using locale {}", std::locale().name());
 	}
 	else {
 		string found;
@@ -926,7 +963,7 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 				found = std::getenv(loc_env);
 				if (std::setlocale(LC_ALL, found.c_str()) == nullptr) {
 					set_failure = true;
-					Logger::warning("Failed to set locale " + found + " continuing anyway.");
+					Logger::warning("Failed to set locale {} continuing anyway.", found);
 				}
 			}
 		}
@@ -959,7 +996,7 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 				Logger::warning("No UTF-8 locale detected! Some symbols might not display correctly.");
 			}
 			else if (std::setlocale(LC_ALL, string(cur_locale + ".UTF-8").c_str()) != nullptr) {
-				Logger::debug("Setting LC_ALL=" + cur_locale + ".UTF-8");
+				Logger::debug("Setting LC_ALL={}.UTF-8", cur_locale);
 			}
 			else if(std::setlocale(LC_ALL, "en_US.UTF-8") != nullptr) {
 				Logger::debug("Setting LC_ALL=en_US.UTF-8");
@@ -977,7 +1014,7 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 		}
 	#endif
 		else if (not set_failure) {
-			Logger::debug("Setting LC_ALL=" + found);
+			Logger::debug("Setting LC_ALL={}", found);
 		}
 	}
 
@@ -988,7 +1025,7 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 	}
 
 	if (Term::current_tty != "unknown") {
-		Logger::info("Running on " + Term::current_tty);
+		Logger::info("Running on {}", Term::current_tty);
 	}
 
 	configure_tty_mode(cli.force_tty);

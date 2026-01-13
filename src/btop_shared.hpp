@@ -110,7 +110,7 @@ namespace Shared {
 namespace Gpu {
 #ifdef GPU_SUPPORT
 	extern vector<string> box;
-	extern int width, height, min_width, min_height;
+	extern int width, total_height, min_width, min_height;
 	extern vector<int> x_vec, y_vec;
 	extern vector<bool> redraw;
 	extern int shown;
@@ -354,6 +354,7 @@ namespace Proc {
 	extern int select_max;
 	extern atomic<int> detailed_pid;
 	extern int selected_pid, start, selected, collapse, expand, filter_found, selected_depth, toggle_children;
+	extern int scroll_pos;
 	extern string selected_name;
 
 	//? Contains the valid sorting options for processes

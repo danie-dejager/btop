@@ -20,9 +20,10 @@ tab-size = 4
 #include <fstream>
 #include <unistd.h>
 
-#include "btop_tools.hpp"
 #include "btop_config.hpp"
+#include "btop_log.hpp"
 #include "btop_theme.hpp"
+#include "btop_tools.hpp"
 
 using std::round;
 using std::stoi;
@@ -41,6 +42,7 @@ namespace Theme {
 
 	fs::path theme_dir;
 	fs::path user_theme_dir;
+	fs::path custom_theme_dir;
 	vector<string> themes;
 	std::unordered_map<string, string> colors;
 	std::unordered_map<string, array<int, 3>> rgbs;
@@ -89,7 +91,12 @@ namespace Theme {
 		{ "process_start", "#80d0a3" },
 		{ "process_mid", "#dcd179" },
 		{ "process_end", "#d45454" },
-		{ "proc_pause_bg", "#b54040" }
+		{ "proc_pause_bg", "#b54040" },
+		{ "proc_follow_bg", "#4040b5"},
+		{ "proc_banner_bg", "#7b407b"},
+		{ "proc_banner_fg", "#ee"},
+		{ "followed_bg", "#4040b5"},
+		{ "followed_fg", "#ee"},
 	};
 
 	const std::unordered_map<string, string> TTY_theme = {
@@ -136,6 +143,11 @@ namespace Theme {
 		{ "process_mid", "\x1b[33m" },
 		{ "process_end", "\x1b[31m" },
 		{ "proc_pause_bg", "\x1b[41m" },
+		{ "proc_follow_bg", "\x1b[44m" },
+		{ "proc_banner_bg", "\x1b[45m" },
+		{ "proc_banner_fg", "\x1b[97m" },
+		{ "followed_bg", "\x1b[44m" },
+		{ "followed_fg", "\x1b[97m" },
 	};
 
 	namespace {
@@ -157,7 +169,7 @@ namespace Theme {
 			hexa.erase(0, 1);
 			for (auto& c : hexa) {
 				if (not isxdigit(c)) {
-					Logger::error("Invalid hex value: " + hexa);
+					Logger::error("Invalid hex value: {}", hexa);
 					return "";
 				}
 			}
@@ -185,9 +197,9 @@ namespace Theme {
 						to_string(stoi(hexa.substr(4, 2), nullptr, 16)) + "m";
 				}
 			}
-			else Logger::error("Invalid size of hex value: " + hexa);
+			else Logger::error("Invalid size of hex value: {}", hexa);
 		}
-		else Logger::error("Hex value missing: " + hexa);
+		else Logger::error("Hex value missing: {}", hexa);
 		return "";
 	}
 
@@ -256,7 +268,7 @@ namespace Theme {
 					else if (not source.at(name).empty()) {
 						t_rgb = ssplit(source.at(name));
 						if (t_rgb.size() != 3) {
-							Logger::error("Invalid RGB decimal value: \"" + source.at(name) + "\"");
+							Logger::error("Invalid RGB decimal value: \"{}\"", source.at(name));
 						} else {
 							colors[name] = dec_to_color(stoi(t_rgb[0]), stoi(t_rgb[1]), stoi(t_rgb[2]), t_to_256, depth);
 							rgbs[name] = array{stoi(t_rgb[0]), stoi(t_rgb[1]), stoi(t_rgb[2])};
@@ -265,7 +277,7 @@ namespace Theme {
 					}
 				}
 				if (not colors.contains(name) and not is_in(name, "meter_bg", "process_start", "process_mid", "process_end", "graph_text")) {
-					Logger::debug("Missing color value for \"" + name + "\". Using value from default.");
+					Logger::debug("Missing color value for \"{}\". Using value from default.", name);
 					colors[name] = hex_to_color(color, t_to_256, depth);
 					rgbs[name] = hex_to_dec(color);
 				}
@@ -381,7 +393,7 @@ namespace Theme {
 			std::ifstream themefile(filepath);
 			if (themefile.good()) {
 				std::unordered_map<string, string> theme_out;
-				Logger::debug("Loading theme file: " + filename);
+				Logger::debug("Loading theme file: {}", filename);
 				while (not themefile.bad()) {
 					if (themefile.peek() == '#') {
 						themefile.ignore(SSmax, '\n');
@@ -418,7 +430,8 @@ namespace Theme {
 		themes.push_back("Default");
 		themes.push_back("TTY");
 
-		for (const auto& path : { user_theme_dir, theme_dir } ) {
+		//? Priority: custom_theme_dir -> user_theme_dir -> theme_dir
+		for (const auto& path : { custom_theme_dir, user_theme_dir, theme_dir } ) {
 			if (path.empty()) continue;
 			for (auto& file : fs::directory_iterator(path)) {
 				if (file.path().extension() == ".theme" and access(file.path().c_str(), R_OK) != -1 and not v_contains(themes, file.path().c_str())) {

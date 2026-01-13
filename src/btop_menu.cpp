@@ -20,6 +20,7 @@ tab-size = 4
 
 #include "btop_config.hpp"
 #include "btop_draw.hpp"
+#include "btop_log.hpp"
 #include "btop_shared.hpp"
 #include "btop_theme.hpp"
 #include "btop_tools.hpp"
@@ -30,8 +31,11 @@ tab-size = 4
 #include <array>
 #include <cmath>
 #include <filesystem>
+#include <iostream>
 #include <unordered_map>
 #include <utility>
+
+#include <fmt/format.h>
 
 using std::array;
 using std::ceil;
@@ -185,7 +189,7 @@ namespace Menu {
 		{"Up, Down", "Select in process list."},
 		{"Enter", "Show detailed information for selected process."},
 		{"Spacebar", "Expand/collapse the selected process in tree view."},
-		{"u", "Expand/collapse the selected process' children."},
+		{"C", "Expand/collapse the selected process' children."},
 		{"Pg Up, Pg Down", "Jump 1 page in process list."},
 		{"Home, End", "Jump to first or last page in process list."},
 		{"Left, Right", "Select previous/next sorting column."},
@@ -195,7 +199,8 @@ namespace Menu {
 		{"a", "Toggle auto scaling for the network graphs."},
 		{"y", "Toggle synced scaling mode for network graphs."},
 		{"f, /", "To enter a process filter. Start with ! for regex."},
-		{"F", "Pause process list."},
+		{"F", "Follow selected process."},
+		{"u", "Pause process list."},
 		{"delete", "Clear any entered filter."},
 		{"c", "Toggle per-core cpu usage of processes."},
 		{"r", "Reverse sorting order in processes box."},
@@ -256,7 +261,8 @@ namespace Menu {
 				"Conflicting keys for",
 				"h (help) and k (kill)",
 				"is accessible while holding shift."},
-
+			{"disable_mouse",
+				"Disable all mouse events."},
 			{"presets",
 				"Define presets for the layout of the boxes.",
 				"",
@@ -377,7 +383,17 @@ namespace Menu {
 				"\"ERROR\", \"WARNING\", \"INFO\" and \"DEBUG\".",
 				"",
 				"The level set includes all lower levels,",
-				"i.e. \"DEBUG\" will show all logging info."}
+				"i.e. \"DEBUG\" will show all logging info."},
+			{"save_config_on_exit",
+				"Save config on exit.",
+				"",
+				"Automatically save current settings to",
+				"config file on exit.",
+				"",
+				"When this is toggled from True to False",
+				"a save is immediately triggered.",
+				"This way a manual save can be done by",
+				"toggling this setting on and off again."}
 		},
 		{
 			{"cpu_bottom",
@@ -722,6 +738,12 @@ namespace Menu {
 				"\"default\", \"braille\", \"block\" or \"tty\".",
 				"",
 				"\"default\" for the general default symbol.",},
+			{"swap_upload_download",
+				"Swap the positions of the upload and download",
+				"graphs.",
+				"",
+				"This allows for a more \"intuitive\" view",
+				"with download being down, on the bottom."},
 			{"net_download",
 				"Fixed network graph download value.",
 				"",
@@ -844,6 +866,14 @@ namespace Menu {
 				"",
 				"Set to 'True' to filter out internal",
 				"processes started by the Linux kernel."},
+			{"proc_follow_detailed",
+				"Follow selected process with detailed view",
+				"",
+				"If set to 'True' then when opening the",
+				"detailed view, the process will be",
+				"followed in the list. Pressing enter",
+				"again will close the detailed view",
+				"and stop following the process."},
 		}
 	};
 
@@ -1286,7 +1316,7 @@ static int optionsMenu(const string& key) {
 			height = min(Term::height - 7, max_items * 2 + 4);
 			if (height % 2 != 0) height--;
 			bg 	= Draw::banner_gen(y, 0, true)
-				+ Draw::createBox(x, y + 6, 78, height, Theme::c("hi_fg"), true, "tab" + Symbols::right)
+				+ Draw::createBox(x, y + 6, 78, height, Theme::c("hi_fg"), true, fmt::format("{}tab{}", Theme::c("hi_fg"), Theme::c("main_fg")) + Symbols::right)
 				+ Mv::to(y+8, x) + Theme::c("hi_fg") + Symbols::div_left + Theme::c("div_line") + Symbols::h_line * 29
 				+ Symbols::div_up + Symbols::h_line * (78 - 32) + Theme::c("hi_fg") + Symbols::div_right
 				+ Mv::to(y+6+height - 1, x+30) + Symbols::div_down + Theme::c("div_line");
@@ -1419,6 +1449,8 @@ static int optionsMenu(const string& key) {
 			else if (selPred.test(isBool)) {
 				Config::flip(option);
 				screen_redraw = true;
+
+				// Special handling for options that need additional action.
 				if (option == "truecolor") {
 					theme_refresh = true;
 					Config::flip("lowcolor");
@@ -1435,6 +1467,16 @@ static int optionsMenu(const string& key) {
 				else if (option == "base_10_sizes") {
 					recollect = true;
 				}
+				else if (option == "save_config_on_exit" and not Config::getB("save_config_on_exit")) {
+					const bool old_write_new = Config::write_new;
+					Config::write_new = true;
+					Config::write();
+					Config::write_new = old_write_new;
+				}
+				else if (option == "disable_mouse") {
+					const auto is_mouse_enabled = !Config::getB("disable_mouse");
+					std::cout << (is_mouse_enabled ? Term::mouse_on : Term::mouse_off) << std::flush;
+				}
 			}
 			else if (selPred.test(isBrowsable)) {
 				auto& optList = optionsList.at(option).get();
@@ -1447,8 +1489,8 @@ static int optionsMenu(const string& key) {
 				if (option == "color_theme")
 					theme_refresh = true;
 				else if (option == "log_level") {
-					Logger::set(optList.at(i));
-					Logger::info("Logger set to " + optList.at(i));
+					Logger::set_log_level(optList.at(i));
+					Logger::info("Logger set to {}", optList.at(i));
 				}
 				else if (option == "base_10_bitrate") {
 				    recollect = true;
@@ -1512,8 +1554,20 @@ static int optionsMenu(const string& key) {
 				#else
 					+ Mv::r(10);
 				#endif
-				if (string button_name = "select_cat_" + to_string(i + 1); not editing and not mouse_mappings.contains(button_name))
-					mouse_mappings[button_name] = {y+6, x+2 + 15*i, 3, 15};
+
+#if !defined(GPU_SUPPORT)
+				constexpr static auto option_menu_tab_width = 15;
+#else
+				constexpr static auto option_menu_tab_width = 12;
+#endif
+				if (const auto button_name = fmt::format("select_cat_{}", i + 1); not editing and not mouse_mappings.contains(button_name)) {
+					mouse_mappings[button_name] = {
+						.line = y + 6,
+						.col = x + 2 + (option_menu_tab_width * i),
+						.height = 3,
+						.width = option_menu_tab_width,
+					};
+				}
 				i++;
 			}
 			if (pages > 1) {

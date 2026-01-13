@@ -1,6 +1,7 @@
 name: OpenBSD CMake
 
 on:
+  workflow_dispatch:
   push:
     branches: main
     tags-ignore: '*.*'
@@ -33,7 +34,7 @@ jobs:
         arch: ['aarch64', 'x86_64']
         version: ['7.8']
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Compile
         uses: vmactions/openbsd-vm@v1

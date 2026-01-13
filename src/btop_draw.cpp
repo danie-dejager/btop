@@ -26,15 +26,16 @@ tab-size = 4
 #include <string_view>
 #include <utility>
 
-#include "btop_draw.hpp"
-#include "btop_config.hpp"
-#include "btop_theme.hpp"
-#include "btop_shared.hpp"
-#include "btop_tools.hpp"
-#include "btop_input.hpp"
-#include "btop_menu.hpp"
 #include <fmt/format.h>
 
+#include "btop_config.hpp"
+#include "btop_draw.hpp"
+#include "btop_input.hpp"
+#include "btop_log.hpp"
+#include "btop_menu.hpp"
+#include "btop_shared.hpp"
+#include "btop_theme.hpp"
+#include "btop_tools.hpp"
 
 using std::array;
 using std::clamp;
@@ -229,7 +230,7 @@ namespace Draw {
 				c_upos = ulen(first);
 			}
 			catch (const std::exception& e) {
-				Logger::error("In TextEdit::operator() : " + string{e.what()});
+				Logger::error("In TextEdit::operator() : {}", e.what());
 				return "";
 			}
 		}
@@ -971,8 +972,8 @@ namespace Cpu {
 #ifdef GPU_SUPPORT
 namespace Gpu {
 	int width_p = 100, height_p = 32;
-	int min_width = 41, min_height = 11;
-	int width = 41, height;
+	int min_width = 41, min_height = 8;
+	int width = 41, total_height;
 	vector<int> x_vec = {}, y_vec = {}, b_height_vec = {};
 	int b_width;
 	vector<int> b_x_vec = {}, b_y_vec = {};
@@ -1014,13 +1015,15 @@ namespace Gpu {
 		auto& graph_bg = Symbols::graph_symbols.at((graph_symbol == "default" ? Config::getS("graph_symbol") + "_up" : graph_symbol + "_up")).at(6);
         auto single_graph = !Config::getB("gpu_mirror_graph");
 		string out;
+		int height = gpu_b_height_offsets[index] + 4;
 		out.reserve(width * height);
 
 		//* Redraw elements not needed to be updated every cycle
 		if (redraw[index]) {
-			graph_up_height = single_graph ? height - 2 : ceil((double)(height - 2) / 2);
-			const int graph_low_height = height - 2 - graph_up_height;
 			out += box[index];
+
+			graph_up_height = single_graph ? b_height_vec[index] : (b_height_vec[index] + 1) / 2;
+			int graph_low_height = single_graph ? 0 : b_height_vec[index] - graph_up_height;
 
 			if (gpu.supported_functions.gpu_utilization) {
 				graph_upper = Draw::Graph{x + width - b_width - 3, graph_up_height, "cpu", safeVal(gpu.gpu_percent, "gpu-totals"s), graph_symbol, false, true}; // TODO cpu -> gpu
@@ -1049,14 +1052,14 @@ namespace Gpu {
 
 
 		//* General GPU info
-
+		int rows_used = 1;
 		//? Gpu graph, meter & clock speed
 		if (gpu.supported_functions.gpu_utilization) {
-			out += Fx::ub + Mv::to(y + 1, x + 1) + graph_upper(safeVal(gpu.gpu_percent, "gpu-totals"s), (data_same or redraw[index]));
+			out += Fx::ub + Mv::to(y + rows_used, x + 1) + graph_upper(safeVal(gpu.gpu_percent, "gpu-totals"s), (data_same or redraw[index]));
 			if (not single_graph)
-				out += Mv::to(y + graph_up_height + 1, x + 1) + graph_lower(safeVal(gpu.gpu_percent, "gpu-totals"s), (data_same or redraw[index]));
+				out += Mv::to(y + rows_used + graph_up_height, x + 1) + graph_lower(safeVal(gpu.gpu_percent, "gpu-totals"s), (data_same or redraw[index]));
 
-			out += Mv::to(b_y + 1, b_x + 1) + Theme::c("main_fg") + Fx::b + "GPU " + gpu_meter(safeVal(gpu.gpu_percent, "gpu-totals"s).back())
+			out += Mv::to(b_y + rows_used, b_x + 1) + Theme::c("main_fg") + Fx::b + "GPU " + gpu_meter(safeVal(gpu.gpu_percent, "gpu-totals"s).back())
 				+ Theme::g("cpu").at(clamp(safeVal(gpu.gpu_percent, "gpu-totals"s).back(), 0ll, 100ll)) + rjust(to_string(safeVal(gpu.gpu_percent, "gpu-totals"s).back()), 5) + Theme::c("main_fg") + '%';
 
 			//? Temperature graph, I assume the device supports utilization if it supports temperature
@@ -1067,6 +1070,7 @@ namespace Gpu {
 				out += rjust(to_string(temp), 4) + Theme::c("main_fg") + unit;
 			}
 			out += Theme::c("div_line") + Symbols::v_line;
+			rows_used++;
 		}
 
 		if (gpu.supported_functions.gpu_clock) {
@@ -1077,24 +1081,26 @@ namespace Gpu {
 
 		//? Power usage meter, power state
 		if (gpu.supported_functions.pwr_usage) {
-			out += Mv::to(b_y + 2, b_x + 1) + Theme::c("main_fg") + Fx::b + "PWR " + pwr_meter(safeVal(gpu.gpu_percent, "gpu-pwr-totals"s).back())
+			out += Mv::to(b_y + rows_used, b_x + 1) + Theme::c("main_fg") + Fx::b + "PWR " + pwr_meter(safeVal(gpu.gpu_percent, "gpu-pwr-totals"s).back())
 				+ Theme::g("cached").at(clamp(safeVal(gpu.gpu_percent, "gpu-pwr-totals"s).back(), 0ll, 100ll))
 				+ fmt::format("{:>5.{}f}", gpu.pwr_usage / 1000.0, gpu.pwr_usage < 10'000 ? 2 : gpu.pwr_usage < 100'000 ? 1 : 0) + Theme::c("main_fg") + 'W';
 			if (gpu.supported_functions.pwr_state and gpu.pwr_state != 32) // NVML_PSTATE_UNKNOWN; unsupported or non-nvidia card
 				out += std::string(" P-state: ") + (gpu.pwr_state > 9 ? "" : " ") + 'P' + Theme::g("cached").at(clamp(gpu.pwr_state, 0ll, 100ll)) + to_string(gpu.pwr_state);
+			rows_used++;
 		}
 
 		//? Encode and Decode meters
 		bool drawnEncDec = gpu.supported_functions.encoder_utilization and gpu.supported_functions.decoder_utilization;
 		if (drawnEncDec) {
-			out += Mv::to(b_y + 3, b_x +1) + Theme::c("main_fg") + Fx::b + "ENC " + enc_meter(gpu.encoder_utilization)
+			out += Mv::to(b_y + rows_used, b_x +1) + Theme::c("main_fg") + Fx::b + "ENC " + enc_meter(gpu.encoder_utilization)
 				+ Theme::g("cpu").at(clamp(gpu.encoder_utilization, 0ll, 100ll)) + rjust(to_string(gpu.encoder_utilization), 4) + Theme::c("main_fg") + '%'
 				+ Theme::c("div_line") + Symbols::v_line + Theme::c("main_fg") + Fx::b + "DEC " + enc_meter(gpu.decoder_utilization)
 				+ Theme::g("cpu").at(clamp(gpu.decoder_utilization, 0ll, 100ll)) + rjust(to_string(gpu.decoder_utilization), 4) + Theme::c("main_fg") + '%';
+			rows_used++;
 		}
 
 		if (gpu.supported_functions.mem_total or gpu.supported_functions.mem_used) {
-			out += Mv::to(b_y + (drawnEncDec ? 4 : 3), b_x);
+			out += Mv::to(b_y + rows_used, b_x);
 			if (gpu.supported_functions.mem_total and gpu.supported_functions.mem_used) {
 				string used_memory_string = floating_humanizer(gpu.mem_used);
 
@@ -1119,7 +1125,7 @@ namespace Gpu {
 				//? Memory clock speed
 				if (gpu.supported_functions.mem_clock) {
 					string clock_speed_string = to_string(gpu.mem_clock_speed);
-					out += Mv::to(b_y + (drawnEncDec ? 4 : 3), b_x + b_width/2 - 11) + Theme::c("div_line") + Symbols::h_line*(5-clock_speed_string.size())
+					out += Mv::to(b_y + rows_used, b_x + b_width/2 - 11) + Theme::c("div_line") + Symbols::h_line*(5-clock_speed_string.size())
 						+ Symbols::title_left + Fx::b + Theme::c("title") + clock_speed_string + " MHz" + Fx::ub + Theme::c("div_line") + Symbols::title_right;
 				}
 			} else {
@@ -1438,6 +1444,7 @@ namespace Net {
 		auto net_sync = Config::getB("net_sync");
 		auto net_auto = Config::getB("net_auto");
 		auto tty_mode = Config::getB("tty_mode");
+		auto swap_upload_download = Config::getB("swap_upload_download");
 		auto& graph_symbol = (tty_mode ? "tty" : Config::getS("graph_symbol_net"));
 		string ip_addr = (net.ipv4.empty() ? net.ipv6 : net.ipv4);
 		if (old_ip != ip_addr) {
@@ -1459,13 +1466,14 @@ namespace Net {
 			graphs.clear();
 			if (safeVal(net.bandwidth, "download"s).empty() or safeVal(net.bandwidth, "upload"s).empty())
 				return out + Fx::reset;
+
 			graphs["download"] = Draw::Graph{
 				width - b_width - 2, u_graph_height, "download",
 				net.bandwidth.at("download"), graph_symbol,
-				false, true, down_max};
+				swap_upload_download, true, down_max};
 			graphs["upload"] = Draw::Graph{
 				width - b_width - 2, d_graph_height, "upload",
-				net.bandwidth.at("upload"), graph_symbol, true, true, up_max};
+				net.bandwidth.at("upload"), graph_symbol, !swap_upload_download, true, up_max};
 
 			//? Interface selector and buttons
 
@@ -1493,25 +1501,38 @@ namespace Net {
 		}
 
 		//? Graphs and stats
-		int cy = 0;
 		for (const string dir : {"download", "upload"}) {
-			out += Mv::to(y+1 + (dir == "upload" ? u_graph_height : 0), x + 1) + graphs.at(dir)(safeVal(net.bandwidth, dir), redraw or data_same or not net.connected)
-				+ Mv::to(y+1 + (dir == "upload" ? height - 3: 0), x + 1) + Fx::ub + Theme::c("graph_text")
+			//         |  upload  |  download  |
+			// no swap |  bottom  |     top    |
+			//  swap   |    top   |   bottom   |
+			// XNOR operation (==)
+			if ((not swap_upload_download and dir == "download") or (swap_upload_download and dir == "upload")) {
+				out += Mv::to(y+1, x + 1);
+			} else {
+				out += Mv::to(y + u_graph_height + 1 + ((height * swap_upload_download) % 2), x + 1);
+			}
+			out += graphs.at(dir)(safeVal(net.bandwidth, dir), redraw or data_same or not net.connected)
+				+ Mv::to(y+1 + (((dir == "upload") == (!swap_upload_download)) * (height - 3)), x + 1) + Fx::ub + Theme::c("graph_text")
 				+ floating_humanizer((dir == "upload" ? up_max : down_max), true);
 			const string speed = floating_humanizer(safeVal(net.stat, dir).speed, false, 0, false, true);
 			const string speed_bits = (b_width >= 20 ? floating_humanizer(safeVal(net.stat, dir).speed, false, 0, true, true) : "");
 			const string top = floating_humanizer(safeVal(net.stat, dir).top, false, 0, true, true);
 			const string total = floating_humanizer(safeVal(net.stat, dir).total);
 			const string symbol = (dir == "upload" ? "▲" : "▼");
-			out += Mv::to(b_y+1+cy, b_x+1) + Fx::ub + Theme::c("main_fg") + symbol + ' ' + ljust(speed, 10) + (b_width >= 20 ? rjust('(' + speed_bits + ')', 13) : "");
-			cy += (b_height == 5 ? 2 : 1);
-			if (b_height >= 8) {
-				out += Mv::to(b_y+1+cy, b_x+1) + symbol + ' ' + "Top: " + rjust('(' + top, (b_width >= 20 ? 17 : 9)) + ')';
-				cy++;
-			}
-			if (b_height >= 6) {
-				out += Mv::to(b_y+1+cy, b_x+1) + symbol + ' ' + "Total: " + rjust(total, (b_width >= 20 ? 16 : 8));
-				cy += (b_height > 6 and b_height % 2 ? 2 : 1);
+			if ((swap_upload_download and dir == "upload") or (not swap_upload_download and dir == "download")) {
+				// Top graph
+				out += Mv::to(b_y+1, b_x+1) + Fx::ub + Theme::c("main_fg") + symbol + ' ' + ljust(speed, 10) + (b_width >= 20 ? rjust('(' + speed_bits + ')', 13) : "");
+				if (b_height >= 8)
+					out += Mv::to(b_y+2, b_x+1) + symbol + ' ' + "Top: " + rjust('(' + top, (b_width >= 20 ? 17 : 9)) + ')';
+				if (b_height >= 6)
+					out += Mv::to(b_y+2 + (b_height >= 8), b_x+1) + symbol + ' ' + "Total: " + rjust(total, (b_width >= 20 ? 16 : 8));
+			} else {
+				// Bottom graph
+				out += Mv::to(b_y + b_height - (b_height / 2), b_x + 1) + Fx::ub + Theme::c("main_fg") + symbol + ' ' + ljust(speed, 10) + (b_width >= 20 ? rjust('(' + speed_bits + ')', 13) : "");
+				if (b_height >= 8)
+					out += Mv::to(b_y + b_height - (b_height / 2) + 1, b_x + 1) + symbol + ' ' + "Top: " + rjust('(' + top, (b_width >= 20 ? 17 : 9)) + ')';
+				if (b_height >= 6)
+					out += Mv::to(b_y + b_height - (b_height / 2) + 1 + (b_height >= 8), b_x + 1) + symbol + ' ' + "Total: " + rjust(total, (b_width >= 20 ? 16 : 8));
 			}
 		}
 
@@ -1527,7 +1548,9 @@ namespace Proc {
 	int x, y, width = 20, height;
 	int start, selected, select_max;
 	bool shown = true, redraw = true;
+	bool is_last_process_in_list = false;
 	int selected_pid = 0, selected_depth = 0;
+	int scroll_pos;
 	string selected_name;
 	std::unordered_map<size_t, Draw::Graph> p_graphs;
 	std::unordered_map<size_t, bool> p_wide_cmd;
@@ -1545,8 +1568,20 @@ namespace Proc {
 		auto start = Config::getI("proc_start");
 		auto selected = Config::getI("proc_selected");
 		auto last_selected = Config::getI("proc_last_selected");
-		const int select_max = (Config::getB("show_detailed") ? (Config::getB("pause_proc_list") ? Proc::select_max - 9 : Proc::select_max - 8) :
-																(Config::getB("pause_proc_list") ? Proc::select_max - 1 : Proc::select_max));
+		int select_max = (Config::getB("show_detailed") ? (Config::getB("proc_banner_shown") ? Proc::select_max - 9 : Proc::select_max - 8) :
+																(Config::getB("proc_banner_shown") ? Proc::select_max - 1 : Proc::select_max));
+
+		if (Config::getB("follow_process")) {
+			if (selected == 0) selected = Config::getI("proc_followed");;
+			if (not Config::getB("pause_proc_list")) {
+				Config::flip("follow_process");
+				Config::set("followed_pid", 0);
+				Config::set("proc_followed", 0);
+				select_max++;
+			}
+			redraw = true;
+		}
+
 		auto vim_keys = Config::getB("vim_keys");
 
 		int numpids = Proc::numpids;
@@ -1615,17 +1650,62 @@ namespace Proc {
 		auto vim_keys = Config::getB("vim_keys");
 		auto show_graphs = Config::getB("proc_cpu_graphs");
 		const auto pause_proc_list = Config::getB("pause_proc_list");
+		auto follow_process = Config::getB("follow_process"); 
+		int followed_pid = Config::getI("followed_pid");
+		int followed = Config::getI("proc_followed");
+		auto proc_banner_shown = pause_proc_list or follow_process;
+		Config::set("proc_banner_shown", proc_banner_shown);
 		start = Config::getI("proc_start");
 		selected = Config::getI("proc_selected");
 		const int y = show_detailed ? Proc::y + 8 : Proc::y;
 		const int height = show_detailed ? Proc::height - 8 : Proc::height;
-		const int select_max = show_detailed ? (pause_proc_list ? Proc::select_max - 9 : Proc::select_max - 8) : 
-												(pause_proc_list ? Proc::select_max - 1 : Proc::select_max);
+		const int select_max = show_detailed ? (proc_banner_shown ? Proc::select_max - 9 : Proc::select_max - 8) : 
+												(proc_banner_shown ? Proc::select_max - 1 : Proc::select_max);
 		auto totalMem = Mem::get_totalMem();
 		int numpids = Proc::numpids;
 		if (force_redraw) redraw = true;
 		string out;
 		out.reserve(width * height);
+
+		//? Move current selection/view to the selected process when a process should be followed
+		if (follow_process and (not pause_proc_list or Config::getB("update_following"))) {
+			Config::set("update_following", false);
+			int loc = 1;
+			bool can_follow = false;
+			for (auto& p : plist) {
+				if (p.filtered or (proc_tree and p.tree_index == plist.size())) continue;
+				if (p.pid == (size_t)followed_pid) {
+					can_follow = true;
+					break;
+				}
+				loc++;
+			}
+
+			if (can_follow) {
+				start = max(0, loc - (select_max / 2));
+				followed = loc < (select_max / 2) ? loc : start > numpids - select_max ? select_max - numpids + loc : select_max / 2;
+				Config::set("proc_followed", followed);
+				selected = followed_pid != Config::getI("detailed_pid") ? followed : 0;
+			}
+			else {
+				Config::set("followed_pid", followed_pid = 0);
+				Config::set("follow_process", follow_process = false);
+				Config::set("proc_banner_shown", proc_banner_shown = pause_proc_list);
+				Config::set("proc_followed", 0);
+			}
+		}
+
+		//? redraw if selection reaches or leaves the end of the list
+		if (selected != Config::getI("proc_last_selected")) {
+			if (selected >= select_max and start >= numpids - select_max) {
+				redraw = true;
+				is_last_process_in_list = true;
+			}
+			else if (is_last_process_in_list) {
+				redraw = true;
+				is_last_process_in_list = false;
+			}
+		}
 
 		//* Redraw elements not needed to be updated every cycle
 		if (redraw) {
@@ -1634,7 +1714,7 @@ namespace Proc {
 			const string title_right = Theme::c("proc_box") + Symbols::title_right;
 			const string title_left_down = Theme::c("proc_box") + Symbols::title_left_down;
 			const string title_right_down = Theme::c("proc_box") + Symbols::title_right_down;
-			for (const auto& key : {"T", "K", "S", "enter"})
+			for (const auto& key : {"t", "K", "k", "s", "N", "F", "enter", "info_enter"})
 				if (Input::mouse_mappings.contains(key)) Input::mouse_mappings.erase(key);
 
 			//? Adapt sizes of text fields
@@ -1687,13 +1767,20 @@ namespace Proc {
 					+ title_left + hi_color + Fx::b + 's' + t_color + "ignals" + Fx::ub + title_right
 					+ title_left + hi_color + Fx::b + 'N' + t_color + "ice" + Fx::ub + title_right;
 				if (alive and selected == 0) {
-					Input::mouse_mappings["k"] = {d_y, mouse_x, 1, 4};
+					Input::mouse_mappings[vim_keys ? "K" : "k"] = {d_y, mouse_x, 1, 4};
 					mouse_x += 6;
 					Input::mouse_mappings["s"] = {d_y, mouse_x, 1, 7};
 				    mouse_x += 9;
 					Input::mouse_mappings["N"] = {d_y, mouse_x, 1, 5};
+				    mouse_x += 7;
 				}
-				if (selected == 0) Input::mouse_mappings["enter"] = {d_y, d_x + d_width - 9, 1, 6};
+				if (width > 77) {
+				    fmt::format_to(std::back_inserter(out), "{}{}{}{}{}{}{}{}",
+				    	title_left, follow_process ? Fx::b : "",
+				    	hi_color, 'F', t_color, "ollow",
+				    	Fx::ub, title_right);
+				    if (selected == 0) Input::mouse_mappings["F"] = {d_y, mouse_x, 1, 6};
+				}
 
 				//? Labels
 				const int item_fit = floor((double)(d_width - 2) / 10);
@@ -1725,7 +1812,7 @@ namespace Proc {
 
 			//? Filter
 			auto filtering = Config::getB("proc_filtering"); // ? filter(20) : Config::getS("proc_filter"))
-			const auto filter_text = (filtering) ? filter(max(6, width - 58)) : uresize(Config::getS("proc_filter"), max(6, width - 58));
+			const auto filter_text = (filtering) ? filter(max(6, width - 66)) : uresize(Config::getS("proc_filter"), max(6, width - 66));
 			out += Mv::to(y, x+9) + title_left + (not filter_text.empty() ? Fx::b : "") + Theme::c("hi_fg") + 'f'
 				+ Theme::c("title") + (not filter_text.empty() ? ' ' + filter_text : "ilter")
 				+ (not filtering and not filter_text.empty() ? Theme::c("hi_fg") + " del" : "")
@@ -1739,11 +1826,18 @@ namespace Proc {
 					Input::mouse_mappings["delete"] = {y, x + 11 + f_len, 1, 3};
 			}
 
-			//? per-core, reverse, tree and sorting
+			//? pause, per-core, reverse, tree and sorting
 			const auto& sorting = Config::getS("proc_sorting");
 			const int sort_len = sorting.size();
 			const int sort_pos = x + width - sort_len - 8;
 
+			if (width > 60 + sort_len) {
+			    fmt::format_to(std::back_inserter(out), "{}{}{}{}{}{}{}{}{}{}{}",
+					Mv::to(y, sort_pos - 32), title_left, pause_proc_list ? Fx::b : "",
+					Theme::c("title"), "pa", Theme::c("hi_fg"), 'u', Theme::c("title"), "se",
+			    	Fx::ub, title_right);
+			    Input::mouse_mappings["u"] = {y, sort_pos - 31, 1, 5};
+			}
 			if (width > 55 + sort_len) {
 				out += Mv::to(y, sort_pos - 25) + title_left + (Config::getB("proc_per_core") ? Fx::b : "") + Theme::c("title")
 					+ "per-" + Theme::c("hi_fg") + 'c' + Theme::c("title") + "ore" + Fx::ub + title_right;
@@ -1764,14 +1858,15 @@ namespace Proc {
 				Input::mouse_mappings["left"] = {y, sort_pos + 1, 1, 2};
 				Input::mouse_mappings["right"] = {y, sort_pos + sort_len + 3, 1, 2};
 
-			//? select, info and signal buttons
-			const string down_button = (selected == select_max and start == numpids - select_max ? Theme::c("inactive_fg") : Theme::c("hi_fg")) + Symbols::down;
+			//? select, info, signal, and follow buttons
+			const string down_button = (is_last_process_in_list ? Theme::c("inactive_fg") : Theme::c("hi_fg")) + Symbols::down;
 			const string t_color = (selected == 0 ? Theme::c("inactive_fg") : Theme::c("title"));
 			const string hi_color = (selected == 0 ? Theme::c("inactive_fg") : Theme::c("hi_fg"));
 			int mouse_x = x + 14;
 			out += Mv::to(y + height - 1, x + 1) + title_left_down + Fx::b + hi_color + Symbols::up + Theme::c("title") + " select " + down_button + Fx::ub + title_right_down
 				+ title_left_down + Fx::b + t_color + "info " + hi_color + Symbols::enter + Fx::ub + title_right_down;
-				if (selected > 0) Input::mouse_mappings["enter"] = {y + height - 1, mouse_x, 1, 6};
+				if (selected > 0) Input::mouse_mappings["info_enter"] = {y + height - 1, mouse_x, 1, 6};
+				else Input::mouse_mappings.erase("info_enter");
 				mouse_x += 8;
 			if (width > 60) {
 				out += title_left_down + Fx::b + hi_color + 't' + t_color + "erminate" + Fx::ub + title_right_down;
@@ -1780,7 +1875,7 @@ namespace Proc {
 			}
 			if (width > 55) {
 				out += title_left_down + Fx::b + hi_color + (vim_keys ? 'K' : 'k') + t_color + "ill" + Fx::ub + title_right_down;
-				if (selected > 0) Input::mouse_mappings["k"] = {y + height - 1, mouse_x, 1, 4};
+				if (selected > 0) Input::mouse_mappings[vim_keys ? "K" : "k"] = {y + height - 1, mouse_x, 1, 4};
 				mouse_x += 6;
 			}
 			out += title_left_down + Fx::b + hi_color + 's' + t_color + "ignals" + Fx::ub + title_right_down;
@@ -1788,6 +1883,14 @@ namespace Proc {
 		    mouse_x += 9;
 		    out += title_left_down + Fx::b + hi_color + 'N' + t_color + "ice" + Fx::ub + title_right_down;
 		    if (selected > 0) Input::mouse_mappings["N"] = {y + height -1, mouse_x, 1, 5};
+			mouse_x += 6;
+			if (width > 72) {
+			    fmt::format_to(std::back_inserter(out), "{}{}{}{}{}{}{}{}",
+			    	title_left_down, follow_process ? Fx::b : "",
+			    	hi_color, 'F', t_color, "ollow",
+			    	Fx::ub, title_right_down);
+			    if (selected > 0) Input::mouse_mappings["F"] = {y + height - 1, mouse_x, 1, 6};
+			}
 
 			//? Labels for fields in list
 			if (not proc_tree)
@@ -1861,6 +1964,7 @@ namespace Proc {
 		for (int n=0; auto& p : plist) {
 			if (p.filtered or (proc_tree and p.tree_index == plist.size()) or n++ < start) continue;
 			bool is_selected = (lc + 1 == selected);
+			bool is_followed = followed_pid == (int)p.pid;
 			if (is_selected) {
 				selected_pid = (int)p.pid;
 				selected_name = p.name;
@@ -1886,10 +1990,11 @@ namespace Proc {
 
 			//? Set correct gradient colors if enabled
 			string c_color, m_color, t_color, g_color, end;
-			if (is_selected) {
+			if (is_selected or is_followed) {
 				c_color = m_color = t_color = g_color = Fx::b;
 				end = Fx::ub;
-				out += Theme::c("selected_bg") + Theme::c("selected_fg") + Fx::b;
+				const string highlight = is_followed ? Theme::c("followed_bg") + Theme::c("followed_fg") : Theme::c("selected_bg") + Theme::c("selected_fg");
+				fmt::format_to(std::back_inserter(out), "{}{}", highlight, Fx::b);
 			}
 			else {
 				int calc = (selected > lc) ? selected - lc : lc - selected;
@@ -1976,26 +2081,31 @@ namespace Proc {
 			out += (thread_size > 0 ? t_color + rjust(proc_threads_string, thread_size) + ' ' + end : "" )
 				+ g_color + ljust((cmp_greater(p.user.size(), user_size) ? p.user.substr(0, user_size - 1) + '+' : p.user), user_size) + ' '
 				+ m_color + rjust(mem_str, 5) + end + ' '
-				+ (is_selected ? "" : Theme::c("inactive_fg")) + (show_graphs ? graph_bg * 5: "")
+				+ (is_selected or is_followed ? "" : Theme::c("inactive_fg")) + (show_graphs ? graph_bg * 5: "")
 				+ (p_graphs.contains(p.pid) ? Mv::l(5) + c_color + p_graphs.at(p.pid)({(p.cpu_p >= 0.1 and p.cpu_p < 5 ? 5ll : (long long)round(p.cpu_p))}, data_same) : "") + end + ' '
 				+ c_color + rjust(cpu_str, 4) + "  " + end;
 			if (lc++ > height - 5) break;
-			else if (lc > height - 5 and pause_proc_list) break;
+			else if (lc > height - 5 and proc_banner_shown) break;
 		}
 
 		out += Fx::reset;
 		while (lc++ < height - 3) out += Mv::to(y+lc+1, x+1) + string(width - 2, ' ');
-		if (pause_proc_list) {
+		if (proc_banner_shown) {
 			fmt::format_to(std::back_inserter(out), "{}{}{}{}{:^{}}{}",
 				Mv::to(y + height - 2, x + 1),
-				Theme::c("proc_pause_bg"), Theme::c("title"), 
-				Fx::b, "Process list paused", width - 2,
+				(pause_proc_list and follow_process) ? Theme::c("proc_banner_bg")
+					: pause_proc_list ? Theme::c("proc_pause_bg")
+					: Theme::c("proc_follow_bg"), 
+				Theme::c("proc_banner_fg"), Fx::b,
+				(pause_proc_list and follow_process) ? "Paused list and Following process"
+					: pause_proc_list ? "Process list paused"
+					: "Following process", width - 2,
 				Fx::reset);
 		}
 
 		//? Draw scrollbar if needed
 		if (numpids > select_max) {
-			const int scroll_pos = clamp((int)round((double)start * select_max / (numpids - select_max)), 0, height - 5);
+			scroll_pos = clamp((int)round((double)start * select_max / (numpids - select_max)), 0, height - 5);
 			out += Mv::to(y + 1, x + width - 2) + Fx::b + Theme::c("main_fg") + Symbols::up
 				+ Mv::to(y + height - 2, x + width - 2) + Symbols::down;
 
@@ -2005,7 +2115,7 @@ namespace Proc {
 		}
 
 		//? Current selection and number of processes
-		string location = to_string(start + selected) + '/' + to_string(numpids);
+		string location = to_string(start + (follow_process ? followed : selected)) + '/' + to_string(numpids);
 		string loc_clear = Symbols::h_line * max((size_t)0, 9 - location.size());
 		out += Mv::to(y + height - 1, x+width - 3 - max(9, (int)location.size())) + Fx::ub + Theme::c("proc_box") + loc_clear
 			+ Symbols::title_left_down + Theme::c("title") + Fx::b + location + Fx::ub + Theme::c("proc_box") + Symbols::title_right_down;
@@ -2036,6 +2146,8 @@ namespace Proc {
 				greyed_out ? Theme::c("inactive_fg") : Theme::c("title"), "hide ",
 				greyed_out ? "" : Theme::c("hi_fg"), Symbols::enter,
 				Fx::ub, Theme::c("proc_box"), Symbols::title_right);
+			if (not greyed_out) Input::mouse_mappings["enter"] = {d_y, d_x + d_width - 9, 1, 6};
+			else Input::mouse_mappings.erase("enter");
 		}
 
 		if (selected == 0 and selected_pid != 0) {
@@ -2093,6 +2205,13 @@ namespace Draw {
 		}
 		Gpu::shown = Gpu::shown_panels.size();
 
+		// Calculate the minimum possible GPU height, store in total_height
+		// The actual total_height value will of course be overwritten later
+		Gpu::total_height = 0;
+		for (int i = 0; i < Gpu::shown; i++) {
+			using namespace Gpu;
+			total_height += 4 + gpu_b_height_offsets[shown_panels[i]];
+		}
 	#endif
 		Mem::shown = boxes.contains("mem");
 		Net::shown = boxes.contains("net");
@@ -2102,6 +2221,7 @@ namespace Draw {
 		if (Cpu::shown) {
 			using namespace Cpu;
 		#ifdef GPU_SUPPORT
+			// inline GPU information
 			int gpus_extra_height =
 				Config::getS("show_gpu_info") == "On" ? Gpu::count
 				: Config::getS("show_gpu_info") == "Auto" ? Gpu::count - Gpu::shown
@@ -2111,7 +2231,7 @@ namespace Draw {
 			width = round((double)Term::width * width_p / 100);
 		#ifdef GPU_SUPPORT
 			if (Gpu::shown != 0 and not (Mem::shown or Net::shown or Proc::shown)) {
-				height = Term::height - Gpu::min_height*Gpu::shown - gpus_extra_height;
+				height = Term::height - Gpu::total_height - gpus_extra_height;
 			} else {
 				height = max(8, (int)ceil((double)Term::height * (trim(boxes) == "cpu" ? 100 : height_p/(Gpu::shown+1) + (Gpu::shown != 0)*5) / 100));
 			}
@@ -2185,9 +2305,10 @@ namespace Draw {
 			pwr_meter_vec.resize(shown);
 			enc_meter_vec.resize(shown);
 			redraw.resize(shown);
+			total_height = 0;
 			for (auto i = 0; i < shown; ++i) {
 				redraw[i] = true;
-
+				int height = 0;
 				width = Term::width;
 				if (Cpu::shown)
 					if (not (Mem::shown or Net::shown or Proc::shown))
@@ -2195,25 +2316,27 @@ namespace Draw {
 					else height = Cpu::height;
 				else
 					if (not (Mem::shown or Net::shown or Proc::shown))
-						height = Term::height/Gpu::shown + (i == 0)*(Term::height%Gpu::shown);
+						height = (Term::height - total_height) / (Gpu::shown - i) + (i == 0) * ((Term::height - total_height) % (Gpu::shown - i));
 					else
 						height = max(min_height, (int)ceil((double)Term::height * height_p/Gpu::shown / 100));
 
+				b_height_vec[i] = gpu_b_height_offsets[shown_panels[i]] + 2;
 				height += (height+Cpu::height == Term::height-1);
-				x_vec[i] = 1; y_vec[i] = 1 + i*height + (not Config::getB("cpu_bottom"))*Cpu::shown*Cpu::height;
+				height = max(height, b_height_vec[i] + 2);
+				x_vec[i] = 1; y_vec[i] = 1 + total_height + (not Config::getB("cpu_bottom"))*Cpu::shown*Cpu::height;
 				box[i] = createBox(x_vec[i], y_vec[i], width, height, Theme::c("cpu_box"), true, std::string("gpu") + (char)(shown_panels[i]+'0'), "", (shown_panels[i]+5)%10); // TODO gpu_box
-
-				b_height_vec[i] = 2 + gpu_b_height_offsets[shown_panels[i]];
 				b_width = clamp(width/2, min_width, 65);
+				total_height += height;
 
 				//? Main statistics box
 				b_x_vec[i] = x_vec[i] + width - b_width - 1;
-				b_y_vec[i] = y_vec[i] + ceil((double)(height - 2) / 2) - ceil((double)(b_height_vec[i]) / 2) + 1;
+				b_y_vec[i] = y_vec[i] + ceil((double)(height - 2 - b_height_vec[i]) / 2) + 1;
 
 				string name = Config::getS(std::string("custom_gpu_name") + (char)(shown_panels[i]+'0'));
 				if (name.empty()) name = gpu_names[shown_panels[i]];
 
 				box[i] += createBox(b_x_vec[i], b_y_vec[i], b_width, b_height_vec[i], "", false, name.substr(0, b_width-5));
+				b_height_vec[i] = height - 2;
 			}
 		}
 	#endif
@@ -2227,16 +2350,16 @@ namespace Draw {
 
 			width = round((double)Term::width * (Proc::shown ? width_p : 100) / 100);
 		#ifdef GPU_SUPPORT
-			height = ceil((double)Term::height * (100 - Net::height_p * Net::shown*4 / ((Gpu::shown != 0 and Cpu::shown) + 4)) / 100) - Cpu::height - Gpu::height*Gpu::shown;
+			height = ceil((double)Term::height * (100 - Net::height_p * Net::shown*4 / ((Gpu::shown != 0 and Cpu::shown) + 4)) / 100) - Cpu::height - Gpu::total_height;
 		#else
 			height = ceil((double)Term::height * (100 - Cpu::height_p * Cpu::shown - Net::height_p * Net::shown) / 100) + 1;
 		#endif
 			x = (proc_left and Proc::shown) ? Term::width - width + 1: 1;
 			if (mem_below_net and Net::shown)
 		#ifdef GPU_SUPPORT
-				y = Term::height - height + 1 - (cpu_bottom ? Cpu::height + Gpu::height*Gpu::shown : 0);
+				y = Term::height - height + 1 - (cpu_bottom ? Cpu::height : 0);
 			else
-				y = cpu_bottom ? 1 : Cpu::height + Gpu::height*Gpu::shown + 1;
+				y = (cpu_bottom ? 1 : Cpu::height + 1) + Gpu::total_height;
 		#else
 				y = Term::height - height + 1 - (cpu_bottom ? Cpu::height : 0);
 			else
@@ -2291,14 +2414,14 @@ namespace Draw {
 			using namespace Net;
 			width = round((double)Term::width * (Proc::shown ? width_p : 100) / 100);
 		#ifdef GPU_SUPPORT
-			height = Term::height - Cpu::height - Gpu::height*Gpu::shown - Mem::height;
+			height = Term::height - Cpu::height - Gpu::total_height - Mem::height;
 		#else
 			height = Term::height - Cpu::height - Mem::height;
 		#endif
 			x = (proc_left and Proc::shown) ? Term::width - width + 1 : 1;
 			if (mem_below_net and Mem::shown)
 			#ifdef GPU_SUPPORT
-				y = cpu_bottom ? 1 : Cpu::height + Gpu::height*Gpu::shown + 1;
+				y = (cpu_bottom ? 1 : Cpu::height + 1) + Gpu::total_height;
 			#else
 				y = cpu_bottom ? 1 : Cpu::height + 1;
 			#endif
@@ -2313,7 +2436,11 @@ namespace Draw {
 			u_graph_height = height - 2 - d_graph_height;
 
 			box = createBox(x, y, width, height, Theme::c("net_box"), true, "net", "", 3);
-			box += createBox(b_x, b_y, b_width, b_height, "", false, "download", "upload");
+			auto swap_up_down = Config::getB("swap_upload_download");
+			if (swap_up_down)
+				box += createBox(b_x, b_y, b_width, b_height, "", false, "upload", "download");
+			else
+				box += createBox(b_x, b_y, b_width, b_height, "", false, "download", "upload");
 		}
 
 		//* Calculate and draw proc box outlines
@@ -2321,13 +2448,13 @@ namespace Draw {
 			using namespace Proc;
 			width = Term::width - (Mem::shown ? Mem::width : (Net::shown ? Net::width : 0));
 		#ifdef GPU_SUPPORT
-			height = Term::height - Cpu::height - Gpu::height*Gpu::shown;
+			height = Term::height - Cpu::height - Gpu::total_height;
 		#else
 			height = Term::height - Cpu::height;
 		#endif
 			x = proc_left ? 1 : Term::width - width + 1;
 		#ifdef GPU_SUPPORT
-			y = (cpu_bottom and Cpu::shown) ? 1 : Cpu::height + Gpu::height*Gpu::shown + 1;
+			y = ((cpu_bottom and Cpu::shown) ? 1 : Cpu::height + 1) + Gpu::total_height;
 		#else
 			y = (cpu_bottom and Cpu::shown) ? 1 : Cpu::height + 1;
 		#endif
