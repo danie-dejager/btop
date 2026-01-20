@@ -29,7 +29,6 @@ tab-size = 4
 #include <cstdint>
 #include <filesystem>
 #include <limits.h>
-#include <pthread.h>
 #include <ranges>
 #include <regex>
 #include <string>
@@ -364,18 +363,6 @@ namespace Tools {
 
 	string hostname();
 	string username();
-
-	static inline void busy_wait (void) {
-	#if defined __i386__ || defined __x86_64__
-		__builtin_ia32_pause();
-	#elif defined __ia64__
-		__asm volatile("hint @pause" : : : "memory");
-	#elif defined __sparc__ && (defined __arch64__ || defined __sparc_v9__)
-		__asm volatile("membar #LoadLoad" : : : "memory");
-	#else
-		__asm volatile("" : : : "memory");
-	#endif
-	}
 
 	void atomic_wait(const atomic<bool>& atom, bool old = true) noexcept;
 

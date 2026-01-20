@@ -19,6 +19,7 @@ tab-size = 4
 #include <array>
 #include <atomic>
 #include <filesystem>
+#include <fmt/format.h>
 #include <fstream>
 #include <iterator>
 #include <locale>
@@ -340,6 +341,7 @@ namespace Config {
 		{"proc_follow_detailed", true},
 		{"follow_process", false},
 		{"update_following", false},
+		{"should_selection_return_to_followed", false},
 	#ifdef GPU_SUPPORT
 		{"nvml_measure_pcie_speeds", true},
 		{"rsmi_measure_pcie_speeds", true},
@@ -356,6 +358,7 @@ namespace Config {
 		{"net_download", 100},
 		{"net_upload", 100},
 		{"detailed_pid", 0},
+		{"restore_detailed_pid", 0},
 		{"selected_pid", 0},
 		{"followed_pid", 0},
 		{"selected_depth", 0},
@@ -676,7 +679,7 @@ namespace Config {
 			boolsTmp.clear();
 		}
 		catch (const std::exception& e) {
-			Global::exit_error_msg = "Exception during Config::unlock() : " + string{e.what()};
+			Global::exit_error_msg = fmt::format("Exception during Config::unlock() : {}", e.what());
 			clean_quit(1);
 		}
 
