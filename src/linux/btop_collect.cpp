@@ -144,9 +144,10 @@ namespace Cpu {
 	std::unordered_map<int, int> core_mapping;
 }
 
+#if defined(GPU_SUPPORT)
+
 namespace Gpu {
 	vector<gpu_info> gpus;
-#ifdef GPU_SUPPORT
 	//? NVIDIA data collection
 	namespace Nvml {
 		//? NVML defines, structs & typedefs
@@ -266,8 +267,9 @@ namespace Gpu {
 		template <bool is_init> bool collect(gpu_info* gpus_slice);
 		uint32_t device_count = 0;
 	}
-#endif
 }
+
+#endif // GPU_SUPPORT
 
 namespace Mem {
 	double old_uptime;
@@ -1352,6 +1354,9 @@ namespace Gpu {
 							Logger::warning("NVML: Failed to get PCIe RX throughput: {}", nvmlErrorString(result));
 						} else gpus_slice[i].pcie_rx = (long long)rx;
 					});
+				} else {
+					gpus_slice[i].pcie_tx = -1;
+					gpus_slice[i].pcie_rx = -1;
 				}
 
 				// DebugTimer nvTimer("Nv utilization");
@@ -1781,7 +1786,7 @@ namespace Gpu {
 				}
 
 				//? PCIe link speeds
-				if (gpus_slice[i].supported_functions.pcie_txrx and Config::getB("rsmi_measure_pcie_speeds")) {
+				if ((gpus_slice[i].supported_functions.pcie_txrx and Config::getB("rsmi_measure_pcie_speeds")) or is_init) {
 					uint64_t tx, rx;
 					result = rsmi_dev_pci_throughput_get(i, &tx, &rx, nullptr);
     				if (result != RSMI_STATUS_SUCCESS) {
@@ -1791,6 +1796,9 @@ namespace Gpu {
 						gpus_slice[i].pcie_tx = (long long)tx;
 						gpus_slice[i].pcie_rx = (long long)rx;
 					}
+				} else {
+					gpus_slice[i].pcie_tx = -1;
+					gpus_slice[i].pcie_rx = -1;
 				}
     		}
 
