@@ -737,12 +737,15 @@ namespace Cpu {
 		std::unordered_map<int, int> core_map;
 		if (cpu_temp_only) return core_map;
 
+		const int num_sensors = core_sensors.size();
+
 		//? Try to get core mapping from /proc/cpuinfo
 		ifstream cpuinfo(Shared::procPath / "cpuinfo");
 		if (cpuinfo.good()) {
 			int cpu{};
 			int core{};
-			int n{};
+			int max_core{};
+			std::unordered_map<int, int> cpu_to_core;
 			for (string instr; cpuinfo >> instr;) {
 				if (instr == "processor") {
 					cpuinfo.ignore(SSmax, ':');
@@ -751,30 +754,30 @@ namespace Cpu {
 				else if (instr.starts_with("core")) {
 					cpuinfo.ignore(SSmax, ':');
 					cpuinfo >> core;
-					if (std::cmp_greater_equal(core, core_sensors.size())) {
-						if (std::cmp_greater_equal(n, core_sensors.size())) n = 0;
-						core_map[cpu] = n++;
-					}
-					else
-						core_map[cpu] = core;
+					cpu_to_core[cpu] = core;
+					max_core = std::max(max_core, core);
 				}
 				cpuinfo.ignore(SSmax, '\n');
 			}
+			if (not cpu_to_core.empty())
+				//? Divide core ID space evenly across sensors (handles AMD multi-CCD, e.g. 5950x: IDs 0-7 -> Tccd1, 8-15 -> Tccd2)
+				for (const auto& [cpu_id, core_id] : cpu_to_core) {
+					core_map[cpu_id] = core_id * num_sensors / (max_core + 1);
+				}
 		}
 
 		//? If core mapping from cpuinfo was incomplete try to guess remainder, if missing completely, map 0-0 1-1 2-2 etc.
 		if (cmp_less(core_map.size(), Shared::coreCount)) {
 			if (Shared::coreCount % 2 == 0 and (long)core_map.size() == Shared::coreCount / 2) {
-				for (int i = 0, n = 0; i < Shared::coreCount / 2; i++) {
-					if (std::cmp_greater_equal(n, core_sensors.size())) n = 0;
-					core_map[Shared::coreCount / 2 + i] = n++;
+				//? SMT siblings mirror their first half of cores.
+				for (int i = 0; i < Shared::coreCount / 2; i++) {
+					core_map[Shared::coreCount / 2 + i] = core_map.count(i) ? core_map.at(i) : (i % num_sensors);
 				}
 			}
 			else {
 				core_map.clear();
-				for (int i = 0, n = 0; i < Shared::coreCount; i++) {
-					if (std::cmp_greater_equal(n, core_sensors.size())) n = 0;
-					core_map[i] = n++;
+				for (int i = 0; i < Shared::coreCount; i++) {
+					core_map[i] = (i * num_sensors) / Shared::coreCount;
 				}
 			}
 		}
@@ -788,7 +791,7 @@ namespace Cpu {
 					if (vals.size() != 2) continue;
 					int change_id = std::stoi(vals.at(0));
 					int new_id = std::stoi(vals.at(1));
-					if (not core_map.contains(change_id) or cmp_greater(new_id, core_sensors.size())) continue;
+					if (not core_map.contains(change_id) or cmp_greater(new_id, num_sensors)) continue;
 					core_map.at(change_id) = new_id;
 				}
 			}
@@ -2018,7 +2021,7 @@ namespace Gpu {
 			if (gpu.supported_functions.mem_total)
 				mem_total += gpu.mem_total;
 			if (gpu.supported_functions.pwr_usage)
-				mem_total += gpu.pwr_usage;
+				pwr_total += gpu.pwr_usage;
 
 			//* Trim vectors if there are more values than needed for graphs
 			if (width != 0) {
@@ -2036,9 +2039,9 @@ namespace Gpu {
 
 		shared_gpu_percent.at("gpu-average").push_back(avg / gpus.size());
 		if (mem_total != 0)
-			shared_gpu_percent.at("gpu-vram-total").push_back(mem_usage_total / mem_total);
+			shared_gpu_percent.at("gpu-vram-total").push_back(static_cast<long long>(round(mem_usage_total * 100.0 / mem_total)));
 		if (gpu_pwr_total_max != 0)
-			shared_gpu_percent.at("gpu-pwr-total").push_back(pwr_total / gpu_pwr_total_max);
+			shared_gpu_percent.at("gpu-pwr-total").push_back(clamp(static_cast<long long>(round(pwr_total * 100.0 / gpu_pwr_total_max)), 0ll, 100ll));
 
 		if (width != 0) {
 			while (cmp_greater(shared_gpu_percent.at("gpu-average").size(), width * 2)) shared_gpu_percent.at("gpu-average").pop_front();
@@ -2876,7 +2879,7 @@ namespace Proc {
 	fs::file_time_type passwd_time;
 
 	uint64_t cputimes;
-	int collapse = -1, expand = -1, toggle_children = -1;
+	int collapse = -1, expand = -1, toggle_children = -1, collapse_all = -1;
 	uint64_t old_cputimes{};
 	atomic<int> numpids{};
 	int filter_found{};
@@ -3334,7 +3337,7 @@ namespace Proc {
 				}
 				toggle_children = -1;
 			}
-			
+
 			if (auto find_pid = (collapse != -1 ? collapse : expand); find_pid != -1) {
 				auto collapser = rng::find(current_procs, find_pid, &proc_info::pid);
 				if (collapser != current_procs.end()) {
@@ -3351,6 +3354,13 @@ namespace Proc {
 				}
 				collapse = expand = -1;
 			}
+
+			if (collapse_all != -1) {
+				toggle_tree_collapse(current_procs);
+				collapse_all = -1;
+				if (Config::ints.at("proc_selected") > 0) locate_selection = true;
+			}
+
 			if (should_filter or not filter.empty()) filter_found = 0;
 
 			vector<tree_proc> tree_procs;
