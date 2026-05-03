@@ -1,8 +1,8 @@
 %undefine _hardened_build
 
 Name:           btop
-Version:        1.4.5
-Release:        3%{?dist}
+Version:        1.4.7
+Release:        1%{?dist}
 Summary:        Modern and colorful command line resource monitor that shows usage and stats
 
 # The entire source code is ASL 2.0 except:
