@@ -11,26 +11,32 @@ License:        Apache-2.0 AND LicenseRef-Fedora-Public-Domain
 URL:            https://github.com/aristocratos/btop
 Source:         %{url}/archive/v%{version}/%{name}-%{version}.tar.gz
 
-BuildRequires:  desktop-file-utils
-BuildRequires:  gcc-c++
-BuildRequires:  make
-BuildRequires:  lowdown
-%if 0%{?el8}
-BuildRequires:  gcc-toolset-12-gcc-c++
-BuildRequires:  gcc-toolset-12-annobin-plugin-gcc
-BuildRequires:  gcc-toolset-12-binutils
-%endif
-%if 0%{?el9}
-BuildRequires:  gcc-toolset-13-gcc-c++
-BuildRequires:  gcc-toolset-13-annobin-plugin-gcc
-BuildRequires:  gcc-toolset-13-binutils
+# Detect Amazon Linux
+%global is_amzn 0
+%if 0%{?amzn}
+%global is_amzn 1
 %endif
 
-# gpu support
-%if 0%{?fedora}
-%ifnarch i686 s390x
-BuildRequires:  rocm-smi-devel
+# Detect EL major
+%global is_el 0
+%if 0%{?rhel}
+%global is_el 1
 %endif
+
+BuildRequires:  make
+BuildRequires:  desktop-file-utils
+BuildRequires:  gcc-c++
+BuildRequires:  lowdown
+
+%if 0%{?el9}
+BuildRequires:  gcc-toolset-14-gcc-c++
+BuildRequires:  gcc-toolset-14-binutils
+%endif
+
+%if %{is_amzn}
+BuildRequires:  gcc14
+BuildRequires:  gcc14-c++
+BuildRequires:  rocm-smi-devel
 %endif
 
 Requires:       hicolor-icon-theme
@@ -47,14 +53,25 @@ C++ version and continuation of bashtop and bpytop.
 
 %prep
 %autosetup
+sed -i '1i#define _GNU_SOURCE' src/linux/intel_gpu_top/intel_gpu_top.c
 
 
 %build
-%{?el8:. /opt/rh/gcc-toolset-12/enable}
-%{?el9:. /opt/rh/gcc-toolset-13/enable}
+%{?el9:. /opt/rh/gcc-toolset-14/enable}
 
-# to build debuginfo
-export CXXFLAGS="${CXXFLAGS} -g"
+%if %{is_amzn}
+export CC=gcc14-gcc
+export CXX=gcc14-g++
+%endif
+
+# Fix asprintf() prototype + feature defines
+export CPPFLAGS="${CPPFLAGS} -D_GNU_SOURCE"
+
+# If your build environment injects annobin specs, strip it (prevents gcc14 plugin failures)
+export CFLAGS="$(echo %{optflags} | sed 's|-specs=/usr/lib/rpm/redhat/redhat-annobin-cc1||g')"
+export CXXFLAGS="$(echo %{optflags} | sed 's|-specs=/usr/lib/rpm/redhat/redhat-annobin-cc1||g') -std=c++23"
+export LDFLAGS="$(echo %{__global_ldflags} | sed 's|-specs=/usr/lib/rpm/redhat/redhat-annobin-cc1||g')"
+
 %make_build
 
 
