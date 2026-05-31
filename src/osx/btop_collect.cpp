@@ -16,6 +16,7 @@ indent = tab
 tab-size = 4
 */
 
+#ifdef __APPLE__
 #include <Availability.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
@@ -47,8 +48,15 @@ tab-size = 4
 #include <stdexcept>
 #include <utility>
 
+#if __MAC_OS_X_VERSION_MIN_REQUIRED > 101504
+#include "sensors.hpp"
+#endif
+#include "smc.hpp"
+#endif
+
 #include <cmath>
 #include <fstream>
+#include <future>
 #include <mutex>
 #include <numeric>
 #include <ranges>
@@ -63,12 +71,7 @@ tab-size = 4
 #include "../btop_shared.hpp"
 #include "../btop_tools.hpp"
 
-#if __MAC_OS_X_VERSION_MIN_REQUIRED > 101504
-#include "sensors.hpp"
-#endif
-#include "smc.hpp"
-
-#if defined(GPU_SUPPORT)
+#if defined(GPU_SUPPORT) && defined(__APPLE__) && defined(__arm64__)
 #include <dlfcn.h>
 #include <mach/mach_time.h>
 
@@ -202,6 +205,7 @@ namespace Gpu {
 	//? Stub shutdown for backends not available on macOS
 	namespace Nvml { bool shutdown() { return false; } }
 	namespace Rsmi { bool shutdown() { return false; } }
+	namespace Asysfs { bool shutdown() { return false; } }
 
 	//? Apple Silicon GPU data collection via IOReport
 	namespace AppleSilicon {
@@ -817,38 +821,64 @@ namespace Cpu {
 		return got_sensors;
 	}
 
-	void update_sensors() {
-		current_cpu.temp_max = 95;  // we have no idea how to get the critical temp
+	struct SensorResult {
+		long long package_temp{};
+		std::vector<long long> core_temps;
+		bool valid{false};
+	};
+
+	static SensorResult collect_sensors() {
+		SensorResult result;
 		try {
 			if (macM1) {
 #if __MAC_OS_X_VERSION_MIN_REQUIRED > 101504
 				ThermalSensors sensors;
-				std::vector<long long> core_temps;
-				current_cpu.temp.at(0).push_back(sensors.getSensors(core_temps));
-				if (current_cpu.temp.at(0).size() > 20)
-					current_cpu.temp.at(0).pop_front();
-				cpu_temp_only = core_temps.empty();
-
-				if (Config::getB("show_coretemp") and not core_temps.empty()) {
-					for (int core = 0; core < Shared::coreCount; core++) {
-						size_t sensor_index = static_cast<size_t>(core) * core_temps.size() / Shared::coreCount;
-						long long temp = core_temps.at(sensor_index);
-						if (cmp_less(core + 1, current_cpu.temp.size())) {
-							current_cpu.temp.at(core + 1).push_back(temp);
-							if (current_cpu.temp.at(core + 1).size() > 20)
-								current_cpu.temp.at(core + 1).pop_front();
-						}
-					}
-				}
+				result.package_temp = sensors.getSensors(result.core_temps);
+				result.valid = true;
 #endif
 			} else {
 				SMCConnection smcCon;
 				int threadsPerCore = Shared::coreCount / Shared::physicalCoreCount;
-				long long packageT = smcCon.getTemp(-1); // -1 returns package T
-				current_cpu.temp.at(0).push_back(packageT);
-
+				result.package_temp = smcCon.getTemp(-1);
 				for (int core = 0; core < Shared::coreCount; core++) {
-					long long temp = smcCon.getTemp((core / threadsPerCore) + core_offset); // same temp for all threads of same physical core
+					result.core_temps.push_back(smcCon.getTemp((core / threadsPerCore) + core_offset));
+				}
+				result.valid = true;
+			}
+		} catch (std::runtime_error &e) {
+			Logger::error("failed getting CPU temp: {}", e.what());
+		}
+		return result;
+	}
+
+	void update_sensors() {
+		static std::future<SensorResult> sensor_future;
+		static SensorResult last_result{};
+
+		current_cpu.temp_max = 95;  // we have no idea how to get the critical temp
+
+		if (sensor_future.valid() and
+		    sensor_future.wait_for(std::chrono::seconds(0)) != std::future_status::timeout) {
+			last_result = sensor_future.get();
+			if (not last_result.valid) {
+				got_sensors = false;
+			}
+		}
+
+		if (last_result.valid) {
+			current_cpu.temp.at(0).push_back(last_result.package_temp);
+			if (current_cpu.temp.at(0).size() > 20)
+				current_cpu.temp.at(0).pop_front();
+
+			if (macM1) {
+				cpu_temp_only = last_result.core_temps.empty();
+			}
+
+			bool show_coretemp = macM1 ? Config::getB("show_coretemp") : true;
+			if (show_coretemp and not last_result.core_temps.empty()) {
+				for (int core = 0; core < Shared::coreCount; core++) {
+					size_t sensor_index = static_cast<size_t>(core) * last_result.core_temps.size() / Shared::coreCount;
+					long long temp = last_result.core_temps.at(sensor_index);
 					if (cmp_less(core + 1, current_cpu.temp.size())) {
 						current_cpu.temp.at(core + 1).push_back(temp);
 						if (current_cpu.temp.at(core + 1).size() > 20)
@@ -856,10 +886,9 @@ namespace Cpu {
 					}
 				}
 			}
-		} catch (std::runtime_error &e) {
-			got_sensors = false;
-			Logger::error("failed getting CPU temp");
 		}
+
+		sensor_future = std::async(std::launch::async, collect_sensors);
 	}
 
 	string get_cpuHz() {
@@ -1270,7 +1299,7 @@ namespace Mem {
 			}
 
 			struct statfs *stfs;
-			int count = getmntinfo(&stfs, MNT_WAIT);
+			int count = getmntinfo(&stfs, MNT_NOWAIT);
 			vector<string> found;
 			found.reserve(last_found.size());
 			for (int i = 0; i < count; i++) {
@@ -1320,25 +1349,48 @@ namespace Mem {
 			if (found.size() != last_found.size()) redraw = true;
 			last_found = std::move(found);
 
-			//? Get disk/partition stats
-			for (auto &[mountpoint, disk] : disks) {
-				if (std::error_code ec; not fs::exists(mountpoint, ec))
-					continue;
-				struct statvfs vfs;
-				if (statvfs(mountpoint.c_str(), &vfs) < 0) {
-					Logger::warning("Failed to get disk/partition stats with statvfs() for: {}", mountpoint);
-					continue;
+			//? Get disk/partition stats asynchronously to avoid blocking on unresponsive network mounts (e.g. SMB/NFS during backup)
+			static std::unordered_map<string, std::future<std::pair<disk_info, int>>> disks_stats_promises;
+			for (auto it = disks.begin(); it != disks.end(); ) {
+				auto &[mountpoint, disk] = *it;
+				if (auto promises_it = disks_stats_promises.find(mountpoint); promises_it != disks_stats_promises.end()) {
+					auto& promise = promises_it->second;
+					if (promise.valid() && promise.wait_for(std::chrono::seconds(0)) == std::future_status::timeout) {
+						++it;
+						continue;
+					}
+					auto promise_res = promises_it->second.get();
+					if (promise_res.second != -1) {
+						Logger::warning("Failed to get disk/partition stats with statvfs() for: {}", mountpoint);
+						++it;
+						continue;
+					}
+					auto &updated_stats = promise_res.first;
+					disk.total = updated_stats.total;
+					disk.free = updated_stats.free;
+					disk.used = updated_stats.used;
+					disk.used_percent = updated_stats.used_percent;
+					disk.free_percent = updated_stats.free_percent;
 				}
-				disk.total = vfs.f_blocks * vfs.f_frsize;
-				disk.free = vfs.f_bfree * vfs.f_frsize;
-				disk.used = disk.total - disk.free;
-				if (disk.total != 0) {
-					disk.used_percent = round((double)disk.used * 100 / disk.total);
-					disk.free_percent = 100 - disk.used_percent;
-				} else {
-					disk.used_percent = 0;
-					disk.free_percent = 0;
-				}
+				disks_stats_promises[mountpoint] = std::async(std::launch::async, [mountpoint]() -> std::pair<disk_info, int> {
+					struct statvfs vfs;
+					disk_info disk;
+					if (statvfs(mountpoint.c_str(), &vfs) < 0) {
+						return {disk, errno};
+					}
+					disk.total = vfs.f_blocks * vfs.f_frsize;
+					disk.free = vfs.f_bfree * vfs.f_frsize;
+					disk.used = disk.total - disk.free;
+					if (disk.total != 0) {
+						disk.used_percent = round((double)disk.used * 100 / disk.total);
+						disk.free_percent = 100 - disk.used_percent;
+					} else {
+						disk.used_percent = 0;
+						disk.free_percent = 0;
+					}
+					return {disk, -1};
+				});
+				++it;
 			}
 
 			//? Setup disks order in UI and add swap if enabled
@@ -1962,6 +2014,9 @@ namespace Proc {
 
 			//? Stable sort to retain selected sorting among processes with the same parent
 			rng::stable_sort(current_procs, rng::less{}, & proc_info::ppid);
+
+			//? Auto-collapse processes with many children when entering tree mode
+			_auto_collapse_oversized(current_procs, tree_mode_change);
 
 			//? Start recursive iteration over processes with the lowest shared parent pids
 			for (auto& p : rng::equal_range(current_procs, current_procs.at(0).ppid, rng::less{}, &proc_info::ppid)) {

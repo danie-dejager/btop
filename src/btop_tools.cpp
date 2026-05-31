@@ -439,25 +439,25 @@ namespace Tools {
 			"bit"s, "Kib"s, "Mib"s,
 			"Gib"s, "Tib"s, "Pib"s,
 			"Eib"s, "Zib"s, "Yib"s,
-			"Bib"s, "GEb"s
+			"Rib"s, "Qib"s
 		};
 		static const array mebiUnits_byte {
 			"Byte"s, "KiB"s, "MiB"s,
 			"GiB"s, "TiB"s, "PiB"s,
 			"EiB"s, "ZiB"s, "YiB"s,
-			"BiB"s, "GEB"s
+			"RiB"s, "QiB"s
 		};
 		static const array megaUnits_bit {
-			"bit"s, "Kb"s, "Mb"s,
+			"bit"s, "kb"s, "Mb"s,
 			"Gb"s, "Tb"s, "Pb"s,
 			"Eb"s, "Zb"s, "Yb"s,
-			"Bb"s, "Gb"s
+			"Rb"s, "Qb"s
 		};
 		static const array megaUnits_byte {
-			"Byte"s, "KB"s, "MB"s,
+			"Byte"s, "kB"s, "MB"s,
 			"GB"s, "TB"s, "PB"s,
 			"EB"s, "ZB"s, "YB"s,
-			"BB"s, "GB"s
+			"RB"s, "QB"s
 		};
 		const auto& units = (bit) ? ( mega ? megaUnits_bit : mebiUnits_bit) : ( mega ? megaUnits_byte : mebiUnits_byte);
 
@@ -574,7 +574,13 @@ namespace Tools {
 
 	void atomic_waiting_lock::wait_for(bool old, uint64_t wait_ms) const noexcept {
 		std::unique_lock lock {mtx};
-		cv.wait_for(lock, std::chrono::milliseconds(wait_ms), [this, old] { return value != old; });
+		const auto start = uptime_micros();
+		const auto wait_us = wait_ms * 1'000ULL;
+		while (value == old) {
+			const auto elapsed = uptime_micros() - start;
+			if (elapsed >= wait_us) break;
+			cv.wait_for(lock, std::chrono::microseconds(wait_us - elapsed), [this, old] { return value != old; });
+		}
 	}
 
 	atomic_waiting_lock::guard atomic_waiting_lock::lock(bool wait) {
