@@ -22,7 +22,7 @@ jobs:
     name: Detect file changes
     runs-on: ubuntu-26.04
     outputs:
-      shared: ${{ steps.filter.outputs.shared }}
+      shared: ${{ steps.filter.outputs.cmake }}
       freebsd: ${{ steps.filter.outputs.freebsd }}
       linux: ${{ steps.filter.outputs.linux }}
       netbsd: ${{ steps.filter.outputs.netbsd }}
@@ -38,20 +38,7 @@ jobs:
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
-          filters: |
-            shared:
-              - ".github/workflows/cmake.yml"
-              - "cmake/**"
-              - "CMakeLists.txt"
-              - "include/**"
-              - "src/*.cpp"
-              - "src/*.hpp"
-              - "tests/**"
-            freebsd: "src/freebsd/**"
-            linux: "src/linux/**"
-            netbsd: "src/netbsd/**"
-            openbsd: "src/openbsd/**"
-            osx: "src/osx/**"
+          filters: .github/filters.yml
 
   linux:
     name: Linux (${{ matrix.cxx }}-${{ matrix.version }})
@@ -145,7 +132,7 @@ jobs:
           persist-credentials: false
 
       - name: Enter VM
-        uses: vmactions/freebsd-vm@f0552d3b69211736abd97f02ff3d4674c56b73b1 # v1.5.5
+        uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
         with:
           arch: x86_64
           release: "15.1"
@@ -191,7 +178,7 @@ jobs:
           persist-credentials: false
 
       - name: Enter VM
-        uses: vmactions/netbsd-vm@7f23a491dcc69c34195721ab67934917707f84c7 # v1.4.9
+        uses: vmactions/netbsd-vm@20ee93a005c9fc78743e6e05269f4cb023b87413 # v1.5.0
         with:
           arch: x86_64
           release: "11.0"
